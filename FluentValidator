@@ -1,0 +1,108 @@
+using System;
+using System.Collections;
+using System.Collections.Generic;
+using System.Linq;
+using System.Reflection;
+using FluentValidation;
+
+// Interface para validadores
+public interface IPropertyValidator
+{
+    bool CanValidate(PropertyInfo property);
+    void ApplyValidation<T>(AbstractValidator<T> validator, PropertyInfo property);
+}
+
+// Validação para strings
+public class StringPropertyValidator : IPropertyValidator
+{
+    public bool CanValidate(PropertyInfo property) => property.PropertyType == typeof(string);
+
+    public void ApplyValidation<T>(AbstractValidator<T> validator, PropertyInfo property)
+    {
+        validator.RuleFor(obj => (string?)property.GetValue(obj))
+                 .NotEmpty()
+                 .WithMessage($"A propriedade '{property.Name}' não pode ser vazia.");
+    }
+}
+
+// Validação para tipos valor (Value Types)
+public class ValueTypePropertyValidator : IPropertyValidator
+{
+    public bool CanValidate(PropertyInfo property) => property.PropertyType.IsValueType;
+
+    public void ApplyValidation<T>(AbstractValidator<T> validator, PropertyInfo property)
+    {
+        validator.RuleFor(obj => property.GetValue(obj))
+                 .NotNull()
+                 .WithMessage($"A propriedade '{property.Name}' não pode ser nula.");
+    }
+}
+
+// Validação para coleções
+public class CollectionPropertyValidator : IPropertyValidator
+{
+    public bool CanValidate(PropertyInfo property)
+        => typeof(IEnumerable).IsAssignableFrom(property.PropertyType) && property.PropertyType != typeof(string);
+
+    public void ApplyValidation<T>(AbstractValidator<T> validator, PropertyInfo property)
+    {
+        validator.RuleForEach(obj => (IEnumerable?)property.GetValue(obj))
+                 .NotNull()
+                 .WithMessage($"A coleção '{property.Name}' não pode ser nula.")
+                 .Must(item => item != null)
+                 .WithMessage($"A coleção '{property.Name}' contém itens nulos.");
+    }
+}
+
+// Validação para propriedades complexas (subclasses)
+public class ComplexTypePropertyValidator : IPropertyValidator
+{
+    public bool CanValidate(PropertyInfo property)
+        => !property.PropertyType.IsPrimitive && property.PropertyType != typeof(string);
+
+    public void ApplyValidation<T>(AbstractValidator<T> validator, PropertyInfo property)
+    {
+        var genericValidatorType = typeof(GenericValidator<>).MakeGenericType(property.PropertyType);
+        var genericValidator = (IValidator)Activator.CreateInstance(genericValidatorType)!;
+
+        validator.RuleFor(obj => property.GetValue(obj))
+                 .SetValidator((IValidator)genericValidator);
+    }
+}
+
+// Fábrica de validadores
+public class PropertyValidatorFactory
+{
+    private readonly List<IPropertyValidator> _validators;
+
+    public PropertyValidatorFactory()
+    {
+        _validators = new List<IPropertyValidator>
+        {
+            new StringPropertyValidator(),
+            new ValueTypePropertyValidator(),
+            new CollectionPropertyValidator(),
+            new ComplexTypePropertyValidator()
+        };
+    }
+
+    public IPropertyValidator? GetValidator(PropertyInfo property)
+    {
+        return _validators.FirstOrDefault(validator => validator.CanValidate(property));
+    }
+}
+
+// Validador genérico
+public class GenericValidator<T> : AbstractValidator<T>
+{
+    public GenericValidator()
+    {
+        var validatorFactory = new PropertyValidatorFactory();
+
+        foreach (var property in typeof(T).GetProperties(BindingFlags.Public | BindingFlags.Instance))
+        {
+            var validator = validatorFactory.GetValidator(property);
+            validator?.ApplyValidation(this, property);
+        }
+    }
+}
