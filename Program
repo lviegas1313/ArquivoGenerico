@@ -1,0 +1,37 @@
+using Microsoft.AspNetCore.Builder;
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
+
+var builder = WebApplication.CreateBuilder(args);
+
+// Carregar configurações de API de local seguro (User Secrets ou appsettings.json)
+builder.Configuration.AddUserSecrets<Program>();
+
+var apiConfig = builder.Configuration.GetSection("ApiConfig").Get<ApiConfig>();
+
+// Configura IHttpClientFactory
+builder.Services.AddHttpClient("Default");
+builder.Services.AddHttpClient("WithCert").ConfigurePrimaryHttpMessageHandler(() =>
+{
+    var handler = new HttpClientHandler();
+    handler.ClientCertificates.Add(new System.Security.Cryptography.X509Certificates.X509Certificate2(apiConfig.CertPath, apiConfig.KeyPath));
+    return handler;
+});
+
+// Adiciona dependências
+builder.Services.AddScoped<IApiService>(_ => new ApiService(
+    httpClientFactory: builder.Services.BuildServiceProvider().GetRequiredService<IHttpClientFactory>(),
+    config: apiConfig
+));
+builder.Services.AddScoped<IProcessDataService, ProcessDataService>();
+
+var app = builder.Build();
+
+// Endpoint para processar os dados
+app.MapGet("/process", async (IProcessDataService processDataService) =>
+{
+    await processDataService.ProcessDataAsync();
+    return Results.Ok("Processamento concluído.");
+});
+
+app.Run();
