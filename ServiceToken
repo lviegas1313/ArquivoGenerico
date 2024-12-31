@@ -1,0 +1,100 @@
+// Services/TokenService.cs
+using System;
+using System.Net.Http;
+using System.Net.Http.Headers;
+using System.Text;
+using System.Text.Json;
+using System.Threading;
+using System.Threading.Tasks;
+
+public class TokenService
+{
+    private string _token;
+    private DateTime _tokenExpiration;
+    private readonly HttpClient _httpClient;
+
+    public TokenService(HttpClient httpClient)
+    {
+        _httpClient = httpClient;
+    }
+
+    public async Task<string> GetTokenAsync()
+    {
+        if (!string.IsNullOrEmpty(_token) && _tokenExpiration > DateTime.UtcNow)
+        {
+            return _token;
+        }
+
+        var requestContent = new StringContent(JsonSerializer.Serialize(new
+        {
+            client_id = "your-client-id",
+            client_secret = "your-client-secret",
+            cert = "path/to/cert.crt",
+            key = "path/to/cert.key",
+            passphrase = "your-passphrase"
+        }), Encoding.UTF8, "application/json");
+
+        var response = await _httpClient.PostAsync("https://api.example.com/token", requestContent);
+        response.EnsureSuccessStatusCode();
+
+        var responseContent = await response.Content.ReadAsStringAsync();
+        var tokenResponse = JsonSerializer.Deserialize<TokenResponse>(responseContent);
+
+        _token = tokenResponse.AccessToken;
+        _tokenExpiration = DateTime.UtcNow.AddSeconds(tokenResponse.ExpiresIn);
+
+        return _token;
+    }
+
+    private class TokenResponse
+    {
+        public string AccessToken { get; set; }
+        public int ExpiresIn { get; set; }
+    }
+}
+
+// Handlers/TokenHandler.cs
+public class TokenHandler : DelegatingHandler
+{
+    private readonly TokenService _tokenService;
+
+    public TokenHandler(TokenService tokenService)
+    {
+        _tokenService = tokenService;
+    }
+
+    protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+    {
+        var token = await _tokenService.GetTokenAsync();
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
+
+        return await base.SendAsync(request, cancellationToken);
+    }
+}
+
+// Program.cs
+var builder = WebApplication.CreateBuilder(args);
+
+// Configure services
+builder.Services.AddHttpClient("ApiWithToken", client =>
+{
+    client.BaseAddress = new Uri("https://api.example.com/");
+}).AddHttpMessageHandler<TokenHandler>();
+
+builder.Services.AddSingleton<TokenService>();
+builder.Services.AddTransient<TokenHandler>();
+
+var app = builder.Build();
+
+// Example usage
+app.MapGet("/get-data", async (IHttpClientFactory httpClientFactory) =>
+{
+    var client = httpClientFactory.CreateClient("ApiWithToken");
+    var response = await client.GetAsync("endpoint");
+    response.EnsureSuccessStatusCode();
+    var content = await response.Content.ReadAsStringAsync();
+
+    return Results.Json(content);
+});
+
+app.Run();
