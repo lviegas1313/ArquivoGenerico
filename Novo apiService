@@ -1,15 +1,38 @@
-// Services/TokenService.cs
 using System;
 using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
+using System.Threading;
 using System.Threading.Tasks;
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
 
-public class TokenService(HttpClient httpClient, TokenServiceConfig config)
+// TokenServiceConfig.cs
+public class TokenServiceConfig
 {
+    public string ClientId { get; set; }
+    public string ClientSecret { get; set; }
+    public string CertPath { get; set; }
+    public string KeyPath { get; set; }
+    public string Passphrase { get; set; }
+    public string TokenEndpoint { get; set; }
+}
+
+// TokenService.cs
+public class TokenService
+{
+    private readonly HttpClient _httpClient;
+    private readonly TokenServiceConfig _config;
     private string _token;
     private DateTime _tokenExpiration;
+
+    public TokenService(HttpClient httpClient, TokenServiceConfig config)
+    {
+        _httpClient = httpClient;
+        _config = config;
+    }
 
     public async Task<string> GetTokenAsync()
     {
@@ -18,16 +41,9 @@ public class TokenService(HttpClient httpClient, TokenServiceConfig config)
             return _token;
         }
 
-        var requestContent = new StringContent(JsonSerializer.Serialize(new
-        {
-            client_id = config.ClientId,
-            client_secret = config.ClientSecret,
-            cert_path = config.CertPath,
-            key_path = config.KeyPath,
-            passphrase = config.Passphrase
-        }), Encoding.UTF8, "application/json");
+        var requestContent = new StringContent(JsonSerializer.Serialize(_config), Encoding.UTF8, "application/json");
 
-        var response = await httpClient.PostAsync(config.TokenEndpoint, requestContent);
+        var response = await _httpClient.PostAsync(_config.TokenEndpoint, requestContent);
         response.EnsureSuccessStatusCode();
 
         var responseContent = await response.Content.ReadAsStringAsync();
@@ -46,22 +62,19 @@ public class TokenService(HttpClient httpClient, TokenServiceConfig config)
     }
 }
 
-public class TokenServiceConfig
+// TokenHandler.cs
+public class TokenHandler : DelegatingHandler
 {
-    public string ClientId { get; set; }
-    public string ClientSecret { get; set; }
-    public string CertPath { get; set; }
-    public string KeyPath { get; set; }
-    public string Passphrase { get; set; }
-    public string TokenEndpoint { get; set; }
-}
+    private readonly TokenService _tokenService;
 
-// Handlers/TokenHandler.cs
-public class TokenHandler(TokenService tokenService) : DelegatingHandler
-{
+    public TokenHandler(TokenService tokenService)
+    {
+        _tokenService = tokenService;
+    }
+
     protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
     {
-        var token = await tokenService.GetTokenAsync();
+        var token = await _tokenService.GetTokenAsync();
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
 
         return await base.SendAsync(request, cancellationToken);
@@ -71,17 +84,25 @@ public class TokenHandler(TokenService tokenService) : DelegatingHandler
 // Program.cs
 var builder = WebApplication.CreateBuilder(args);
 
-// Configure services
-builder.Services.Configure<TokenServiceConfig>(builder.Configuration.GetSection("TokenService"));
+// Registrar TokenServiceConfig diretamente no contêiner de DI
+builder.Services.AddSingleton<TokenServiceConfig>(sp =>
+{
+    var config = new TokenServiceConfig();
+    builder.Configuration.GetSection("TokenService").Bind(config);
+    return config;
+});
+
+// Registrar HttpClient e TokenHandler
 builder.Services.AddHttpClient("WithToken")
     .AddHttpMessageHandler<TokenHandler>();
 
+// Registrar TokenService e TokenHandler
 builder.Services.AddSingleton<TokenService>();
 builder.Services.AddTransient<TokenHandler>();
 
 var app = builder.Build();
 
-// Example usage
+// Exemplo de uso
 app.MapGet("/get-data", async (IHttpClientFactory httpClientFactory) =>
 {
     var client = httpClientFactory.CreateClient("WithToken");
@@ -92,7 +113,7 @@ app.MapGet("/get-data", async (IHttpClientFactory httpClientFactory) =>
     return Results.Json(content);
 });
 
-// Configure middleware to intercept all requests
+// Middleware para interceptar todas as requisições
 app.Use(async (context, next) =>
 {
     var factory = context.RequestServices.GetRequiredService<IHttpClientFactory>();
