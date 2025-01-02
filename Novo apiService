@@ -41,7 +41,20 @@ public class TokenService
             return _token;
         }
 
-        var requestContent = new StringContent(JsonSerializer.Serialize(_config), Encoding.UTF8, "application/json");
+        // Configura o conteúdo da requisição
+        var requestContent = new FormUrlEncodedContent(new[]
+        {
+            new KeyValuePair<string, string>("grant_type", "client_credentials")
+        });
+
+        // Configura a autenticação Basic Auth
+        var authHeader = Convert.ToBase64String(Encoding.UTF8.GetBytes($"{_config.ClientId}:{_config.ClientSecret}"));
+        _httpClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Basic", authHeader);
+
+        // Configura os certificados (exemplo usando HttpClientHandler)
+        var handler = new HttpClientHandler();
+        handler.ClientCertificates.Add(new System.Security.Cryptography.X509Certificates.X509Certificate2(_config.CertPath, _config.Passphrase));
+        handler.ClientCertificates.Add(new System.Security.Cryptography.X509Certificates.X509Certificate2(_config.KeyPath, _config.Passphrase));
 
         var response = await _httpClient.PostAsync(_config.TokenEndpoint, requestContent);
         response.EnsureSuccessStatusCode();
