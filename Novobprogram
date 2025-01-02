@@ -1,0 +1,43 @@
+var builder = WebApplication.CreateBuilder(args);
+
+// Registrar ApigeeConfig diretamente no contêiner de DI
+builder.Services.AddSingleton<ApigeeConfig>(sp =>
+{
+    var config = new ApigeeConfig();
+    builder.Configuration.GetSection("ApigeeConfig").Bind(config);
+    return config;
+});
+
+// Registrar HttpClient com certificado e TokenHandler
+builder.Services.AddHttpClient("WithToken", (sp, client) =>
+{
+    var config = sp.GetRequiredService<ApigeeConfig>();
+    client.BaseAddress = new Uri(config.TokenEndpoint);
+})
+.ConfigurePrimaryHttpMessageHandler(sp =>
+{
+    var config = sp.GetRequiredService<ApigeeConfig>();
+    var handler = new HttpClientHandler();
+    handler.ClientCertificates.Add(new System.Security.Cryptography.X509Certificates.X509Certificate2(config.CertPath, config.Passphrase));
+    return handler;
+})
+.AddHttpMessageHandler<TokenHandler>();
+
+// Registrar TokenService e TokenHandler
+builder.Services.AddSingleton<TokenService>();
+builder.Services.AddTransient<TokenHandler>();
+
+var app = builder.Build();
+
+// Exemplo de uso
+app.MapGet("/get-data", async (IHttpClientFactory httpClientFactory) =>
+{
+    var client = httpClientFactory.CreateClient("WithToken");
+    var response = await client.GetAsync("https://api.example.com/endpoint");
+    response.EnsureSuccessStatusCode();
+    var content = await response.Content.ReadAsStringAsync();
+
+    return Results.Json(content);
+});
+
+app.Run();
