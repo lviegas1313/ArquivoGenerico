@@ -9,11 +9,11 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 
-// TokenServiceConfig.cs
-public class TokenServiceConfig
+// ApigeeConfig.cs
+public class ApigeeConfig
 {
-    public string ClientId { get; set; }
-    public string ClientSecret { get; set; }
+    public string User { get; set; }
+    public string Password { get; set; }
     public string CertPath { get; set; }
     public string KeyPath { get; set; }
     public string Passphrase { get; set; }
@@ -21,18 +21,10 @@ public class TokenServiceConfig
 }
 
 // TokenService.cs
-public class TokenService
+public class TokenService(HttpClient httpClient, ApigeeConfig config)
 {
-    private readonly HttpClient _httpClient;
-    private readonly TokenServiceConfig _config;
     private string _token;
     private DateTime _tokenExpiration;
-
-    public TokenService(HttpClient httpClient, TokenServiceConfig config)
-    {
-        _httpClient = httpClient;
-        _config = config;
-    }
 
     public async Task<string> GetTokenAsync()
     {
@@ -48,15 +40,15 @@ public class TokenService
         });
 
         // Configura a autenticação Basic Auth
-        var authHeader = Convert.ToBase64String(Encoding.UTF8.GetBytes($"{_config.ClientId}:{_config.ClientSecret}"));
-        _httpClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Basic", authHeader);
+        var authHeader = Convert.ToBase64String(Encoding.UTF8.GetBytes($"{config.User}:{config.Password}"));
+        httpClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Basic", authHeader);
 
         // Configura os certificados (exemplo usando HttpClientHandler)
         var handler = new HttpClientHandler();
-        handler.ClientCertificates.Add(new System.Security.Cryptography.X509Certificates.X509Certificate2(_config.CertPath, _config.Passphrase));
-        handler.ClientCertificates.Add(new System.Security.Cryptography.X509Certificates.X509Certificate2(_config.KeyPath, _config.Passphrase));
+        handler.ClientCertificates.Add(new System.Security.Cryptography.X509Certificates.X509Certificate2(config.CertPath, config.Passphrase));
+        handler.ClientCertificates.Add(new System.Security.Cryptography.X509Certificates.X509Certificate2(config.KeyPath, config.Passphrase));
 
-        var response = await _httpClient.PostAsync(_config.TokenEndpoint, requestContent);
+        var response = await httpClient.PostAsync(config.TokenEndpoint, requestContent);
         response.EnsureSuccessStatusCode();
 
         var responseContent = await response.Content.ReadAsStringAsync();
@@ -76,18 +68,11 @@ public class TokenService
 }
 
 // TokenHandler.cs
-public class TokenHandler : DelegatingHandler
+public class TokenHandler(TokenService tokenService) : DelegatingHandler
 {
-    private readonly TokenService _tokenService;
-
-    public TokenHandler(TokenService tokenService)
-    {
-        _tokenService = tokenService;
-    }
-
     protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
     {
-        var token = await _tokenService.GetTokenAsync();
+        var token = await tokenService.GetTokenAsync();
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
 
         return await base.SendAsync(request, cancellationToken);
@@ -97,11 +82,11 @@ public class TokenHandler : DelegatingHandler
 // Program.cs
 var builder = WebApplication.CreateBuilder(args);
 
-// Registrar TokenServiceConfig diretamente no contêiner de DI
-builder.Services.AddSingleton<TokenServiceConfig>(sp =>
+// Registrar ApigeeConfig diretamente no contêiner de DI
+builder.Services.AddSingleton<ApigeeConfig>(sp =>
 {
-    var config = new TokenServiceConfig();
-    builder.Configuration.GetSection("TokenService").Bind(config);
+    var config = new ApigeeConfig();
+    builder.Configuration.GetSection("ApigeeConfig").Bind(config);
     return config;
 });
 
