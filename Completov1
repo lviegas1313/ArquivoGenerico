@@ -1,23 +1,50 @@
 using System;
 using System.Net.Http;
 using System.Net.Http.Headers;
+using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using System.Text.Json;
 using System.Threading.Tasks;
-using Microsoft.AspNetCore.Mvc;
-using Microsoft.Extensions.Configuration;
+using Microsoft.AspNetCore.Builder;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Configuration;
+using Microsoft.AspNetCore.Mvc;
 
-// ApigeeConfig.cs
-public class ApigeeConfig
+var builder = WebApplication.CreateBuilder(args);
+
+// Registrar ApigeeConfig a partir do appsettings.json
+builder.Services.Configure<ApigeeConfig>(builder.Configuration.GetSection("ApigeeConfig"));
+
+// Registrar serviços
+builder.Services.AddHttpClient(); // HttpClient genérico
+builder.Services.AddSingleton<TokenService>();
+builder.Services.AddSingleton<ApiAtlasService>();
+
+// Registrar controllers
+builder.Services.AddControllers();
+
+var app = builder.Build();
+
+if (app.Environment.IsDevelopment())
 {
-    public string User { get; set; }
-    public string Password { get; set; }
-    public string CertPath { get; set; }
-    public string Passphrase { get; set; }
-    public string TokenEndpoint { get; set; }
+    app.UseDeveloperExceptionPage();
 }
+
+app.UseRouting();
+
+app.MapControllers();
+
+app.Run();
+
+// Configuração do ApigeeConfig
+public record ApigeeConfig(
+    string User,
+    string Password,
+    string CertPath,
+    string Passphrase,
+    string TokenEndpoint
+);
 
 // TokenService.cs
 public class TokenService(HttpClient httpClient, ApigeeConfig config)
@@ -32,15 +59,20 @@ public class TokenService(HttpClient httpClient, ApigeeConfig config)
             return _token;
         }
 
+        // Configura o HttpClient com o certificado
+        var handler = new HttpClientHandler();
+        handler.ClientCertificates.Add(new X509Certificate2(config.CertPath, config.Passphrase));
+        var client = new HttpClient(handler);
+
         // Adiciona o grant_type como parâmetro na URL
         var tokenEndpointWithParams = $"{config.TokenEndpoint}?grant_type=client_credentials";
 
         // Configura a autenticação Basic Auth
         var authHeader = Convert.ToBase64String(Encoding.UTF8.GetBytes($"{config.User}:{config.Password}"));
-        httpClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Basic", authHeader);
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Basic", authHeader);
 
         // Envia a requisição sem corpo
-        var response = await httpClient.PostAsync(tokenEndpointWithParams, null);
+        var response = await client.PostAsync(tokenEndpointWithParams, null);
         response.EnsureSuccessStatusCode();
 
         var responseContent = await response.Content.ReadAsStringAsync();
@@ -52,89 +84,53 @@ public class TokenService(HttpClient httpClient, ApigeeConfig config)
         return _token;
     }
 
-    private class TokenResponse
-    {
-        public string AccessToken { get; set; }
-        public int ExpiresIn { get; set; }
-    }
+    private record TokenResponse(string AccessToken, int ExpiresIn);
 }
 
-// TokenHandler.cs
-public class TokenHandler(TokenService tokenService) : DelegatingHandler
+// ApiAtlasService.cs
+public class ApiAtlasService(HttpClient httpClient, TokenService tokenService)
 {
-    protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+    public async Task<string> GetDataFromAtlasAsync()
     {
-        var token = await tokenService.GetTokenAsync();
-        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
+        try
+        {
+            // Obtém o token
+            var token = await tokenService.GetTokenAsync();
 
-        return await base.SendAsync(request, cancellationToken);
+            // Configura o token no cabeçalho de autorização
+            httpClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
+
+            // Faz a requisição à API Atlas
+            var response = await httpClient.GetAsync("https://api.atlas.example.com/endpoint");
+            response.EnsureSuccessStatusCode();
+
+            // Retorna o conteúdo da resposta
+            return await response.Content.ReadAsStringAsync();
+        }
+        catch (Exception ex)
+        {
+            // Trata erros
+            throw new ApplicationException("Erro ao buscar dados da API Atlas.", ex);
+        }
     }
 }
 
-// DataController.cs
+// AtlasController.cs
 [ApiController]
 [Route("api/[controller]")]
-public class DataController : ControllerBase
+public class AtlasController(ApiAtlasService apiAtlasService) : ControllerBase
 {
-    private readonly IHttpClientFactory _httpClientFactory;
-
-    public DataController(IHttpClientFactory httpClientFactory)
-    {
-        _httpClientFactory = httpClientFactory;
-    }
-
-    [HttpGet]
+    [HttpGet("data")]
     public async Task<IActionResult> GetDataAsync()
     {
-        var client = _httpClientFactory.CreateClient("WithToken");
-        var response = await client.GetAsync("https://api.example.com/endpoint");
-
-        if (response.IsSuccessStatusCode)
+        try
         {
-            var content = await response.Content.ReadAsStringAsync();
-            return Ok(content);
+            var data = await apiAtlasService.GetDataFromAtlasAsync();
+            return Ok(data);
         }
-
-        return StatusCode((int)response.StatusCode, "Erro ao buscar dados");
+        catch (Exception ex)
+        {
+            return StatusCode(500, $"Erro ao buscar dados da API Atlas: {ex.Message}");
+        }
     }
 }
-
-// Program.cs
-var builder = WebApplication.CreateBuilder(args);
-
-// Registrar ApigeeConfig diretamente no contêiner de DI
-builder.Services.AddSingleton<ApigeeConfig>(sp =>
-{
-    var config = new ApigeeConfig();
-    builder.Configuration.GetSection("ApigeeConfig").Bind(config);
-    return config;
-});
-
-// Registrar HttpClient com certificado e TokenHandler
-builder.Services.AddHttpClient("WithToken", (sp, client) =>
-{
-    var config = sp.GetRequiredService<ApigeeConfig>();
-    client.BaseAddress = new Uri(config.TokenEndpoint);
-})
-.ConfigurePrimaryHttpMessageHandler(sp =>
-{
-    var config = sp.GetRequiredService<ApigeeConfig>();
-    var handler = new HttpClientHandler();
-    handler.ClientCertificates.Add(new System.Security.Cryptography.X509Certificates.X509Certificate2(config.CertPath, config.Passphrase));
-    return handler;
-})
-.AddHttpMessageHandler<TokenHandler>();
-
-// Registrar TokenService e TokenHandler
-builder.Services.AddSingleton<TokenService>();
-builder.Services.AddTransient<TokenHandler>();
-
-// Registrar Controllers
-builder.Services.AddControllers();
-
-var app = builder.Build();
-
-// Mapear Controllers
-app.MapControllers();
-
-app.Run();
