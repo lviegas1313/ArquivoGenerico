@@ -1,136 +1,188 @@
-using System;
+// Infrastructure/Http/TokenInterceptor.cs
 using System.Net.Http;
-using System.Net.Http.Headers;
-using System.Security.Cryptography.X509Certificates;
-using System.Text;
-using System.Text.Json;
+using System.Threading;
 using System.Threading.Tasks;
-using Microsoft.AspNetCore.Builder;
+
+namespace YourProject.Infrastructure.Http;
+
+public interface ITokenService
+{
+    Task<string> GetTokenAsync();
+}
+
+public class TokenInterceptor(ITokenService tokenService) : DelegatingHandler
+{
+    protected override async Task<HttpResponseMessage> SendAsync(
+        HttpRequestMessage request,
+        CancellationToken cancellationToken)
+    {
+        var token = await tokenService.GetTokenAsync();
+        request.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", token);
+        return await base.SendAsync(request, cancellationToken);
+    }
+}
+
+// Infrastructure/Http/HttpClientSetup.cs
 using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Configuration;
+using System;
+using Polly;
+using Polly.Extensions.Http;
+
+namespace YourProject.Infrastructure.Http;
+
+public static class HttpClientSetup
+{
+    public static IServiceCollection AddHttpClients(
+        this IServiceCollection services, 
+        IConfiguration configuration)
+    {
+        // Registra o interceptador
+        services.AddTransient<TokenInterceptor>();
+
+        // Configuração do HttpClient para o AtlasApi
+        services.AddHttpClient("AtlasApi", client =>
+        {
+            // Configuração base do cliente HTTP
+            client.BaseAddress = new Uri(configuration["AtlasApi:BaseUrl"]);
+            client.Timeout = TimeSpan.FromSeconds(30);
+            
+            // Headers padrão
+            client.DefaultRequestHeaders.Add("Accept", "application/json");
+            client.DefaultRequestHeaders.Add("User-Agent", "AtlasApiClient");
+        })
+        // Adiciona o interceptador de token
+        .AddHttpMessageHandler<TokenInterceptor>()
+        // Adiciona política de retry
+        .AddPolicyHandler(GetRetryPolicy())
+        // Adiciona circuit breaker
+        .AddPolicyHandler(GetCircuitBreakerPolicy());
+
+        return services;
+    }
+
+    // Política de retry para tentativas em caso de falha
+    private static IAsyncPolicy<HttpResponseMessage> GetRetryPolicy()
+    {
+        return HttpPolicyExtensions
+            .HandleTransientHttpError()
+            .WaitAndRetryAsync(3, retryAttempt => 
+                TimeSpan.FromSeconds(Math.Pow(2, retryAttempt)));
+    }
+
+    // Política de circuit breaker para evitar sobrecarga
+    private static IAsyncPolicy<HttpResponseMessage> GetCircuitBreakerPolicy()
+    {
+        return HttpPolicyExtensions
+            .HandleTransientHttpError()
+            .CircuitBreakerAsync(5, TimeSpan.FromSeconds(30));
+    }
+}
+
+// Services/Interfaces/IAtlasService.cs
+namespace YourProject.Services.Interfaces;
+
+public interface IAtlasService
+{
+    Task<TResponse> GetAsync<TResponse>(string endpoint);
+    Task<TResponse> PostAsync<TRequest, TResponse>(string endpoint, TRequest request);
+    // Adicione outros métodos conforme necessário
+}
+
+// Services/AtlasService.cs
+using System.Net.Http;
+using System.Net.Http.Json;
+using YourProject.Services.Interfaces;
+
+namespace YourProject.Services;
+
+public class AtlasService(IHttpClientFactory httpClientFactory) : IAtlasService
+{
+    private readonly HttpClient _httpClient = httpClientFactory.CreateClient("AtlasApi");
+
+    public async Task<TResponse> GetAsync<TResponse>(string endpoint)
+    {
+        var response = await _httpClient.GetAsync(endpoint);
+        response.EnsureSuccessStatusCode();
+        return await response.Content.ReadFromJsonAsync<TResponse>() 
+            ?? throw new InvalidOperationException("Failed to deserialize response");
+    }
+
+    public async Task<TResponse> PostAsync<TRequest, TResponse>(string endpoint, TRequest request)
+    {
+        var response = await _httpClient.PostAsJsonAsync(endpoint, request);
+        response.EnsureSuccessStatusCode();
+        return await response.Content.ReadFromJsonAsync<TResponse>()
+            ?? throw new InvalidOperationException("Failed to deserialize response");
+    }
+}
+
+// Controllers/ExemploController.cs
 using Microsoft.AspNetCore.Mvc;
+using YourProject.Services.Interfaces;
+
+namespace YourProject.Controllers;
+
+[ApiController]
+[Route("api/[controller]")]
+public class ExemploController(IAtlasService atlasService) : ControllerBase
+{
+    [HttpGet("dados")]
+    public async Task<ActionResult<SeuTipoDeResposta>> ObterDados()
+    {
+        try
+        {
+            var resultado = await atlasService.GetAsync<SeuTipoDeResposta>("endpoint/dados");
+            return Ok(resultado);
+        }
+        catch (HttpRequestException ex)
+        {
+            return StatusCode(500, "Erro ao comunicar com a API Atlas");
+        }
+    }
+
+    [HttpPost("dados")]
+    public async Task<ActionResult<SeuTipoDeResposta>> EnviarDados([FromBody] SeuTipoDeRequest request)
+    {
+        try
+        {
+            var resultado = await atlasService.PostAsync<SeuTipoDeRequest, SeuTipoDeResposta>(
+                "endpoint/dados", 
+                request
+            );
+            return Ok(resultado);
+        }
+        catch (HttpRequestException ex)
+        {
+            return StatusCode(500, "Erro ao comunicar com a API Atlas");
+        }
+    }
+}
+
+// Program.cs
+using YourProject.Infrastructure.Http;
+using YourProject.Services;
+using YourProject.Services.Interfaces;
 
 var builder = WebApplication.CreateBuilder(args);
 
-// Registrar ApigeeConfig a partir do appsettings.json
-builder.Services.Configure<ApigeeConfig>(builder.Configuration.GetSection("ApigeeConfig"));
-
-// Registrar serviços
-builder.Services.AddHttpClient(); // HttpClient genérico
-builder.Services.AddSingleton<TokenService>();
-builder.Services.AddSingleton<ApiAtlasService>();
-
-// Registrar controllers
+// Configuração dos serviços
 builder.Services.AddControllers();
+builder.Services.AddScoped<ITokenService, SeuServicoDeToken>();
+builder.Services.AddScoped<IAtlasService, AtlasService>();
+builder.Services.AddHttpClients(builder.Configuration);
 
 var app = builder.Build();
 
-if (app.Environment.IsDevelopment())
-{
-    app.UseDeveloperExceptionPage();
-}
-
-app.UseRouting();
-
+app.UseHttpsRedirection();
+app.UseAuthorization();
 app.MapControllers();
 
 app.Run();
 
-// Configuração do ApigeeConfig
-public record ApigeeConfig(
-    string User,
-    string Password,
-    string CertPath,
-    string Passphrase,
-    string TokenEndpoint
-);
-
-// TokenService.cs
-public class TokenService(HttpClient httpClient, ApigeeConfig config)
+// appsettings.json
 {
-    private string _token;
-    private DateTime _tokenExpiration;
-
-    public async Task<string> GetTokenAsync()
-    {
-        if (!string.IsNullOrEmpty(_token) && _tokenExpiration > DateTime.UtcNow)
-        {
-            return _token;
-        }
-
-        // Configura o HttpClient com o certificado
-        var handler = new HttpClientHandler();
-        handler.ClientCertificates.Add(new X509Certificate2(config.CertPath, config.Passphrase));
-        var client = new HttpClient(handler);
-
-        // Adiciona o grant_type como parâmetro na URL
-        var tokenEndpointWithParams = $"{config.TokenEndpoint}?grant_type=client_credentials";
-
-        // Configura a autenticação Basic Auth
-        var authHeader = Convert.ToBase64String(Encoding.UTF8.GetBytes($"{config.User}:{config.Password}"));
-        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Basic", authHeader);
-
-        // Envia a requisição sem corpo
-        var response = await client.PostAsync(tokenEndpointWithParams, null);
-        response.EnsureSuccessStatusCode();
-
-        var responseContent = await response.Content.ReadAsStringAsync();
-        var tokenResponse = JsonSerializer.Deserialize<TokenResponse>(responseContent);
-
-        _token = tokenResponse.AccessToken;
-        _tokenExpiration = DateTime.UtcNow.AddSeconds(tokenResponse.ExpiresIn);
-
-        return _token;
-    }
-
-    private record TokenResponse(string AccessToken, int ExpiresIn);
-}
-
-// ApiAtlasService.cs
-public class ApiAtlasService(HttpClient httpClient, TokenService tokenService)
-{
-    public async Task<string> GetDataFromAtlasAsync()
-    {
-        try
-        {
-            // Obtém o token
-            var token = await tokenService.GetTokenAsync();
-
-            // Configura o token no cabeçalho de autorização
-            httpClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
-
-            // Faz a requisição à API Atlas
-            var response = await httpClient.GetAsync("https://api.atlas.example.com/endpoint");
-            response.EnsureSuccessStatusCode();
-
-            // Retorna o conteúdo da resposta
-            return await response.Content.ReadAsStringAsync();
-        }
-        catch (Exception ex)
-        {
-            // Trata erros
-            throw new ApplicationException("Erro ao buscar dados da API Atlas.", ex);
-        }
-    }
-}
-
-// AtlasController.cs
-[ApiController]
-[Route("api/[controller]")]
-public class AtlasController(ApiAtlasService apiAtlasService) : ControllerBase
-{
-    [HttpGet("data")]
-    public async Task<IActionResult> GetDataAsync()
-    {
-        try
-        {
-            var data = await apiAtlasService.GetDataFromAtlasAsync();
-            return Ok(data);
-        }
-        catch (Exception ex)
-        {
-            return StatusCode(500, $"Erro ao buscar dados da API Atlas: {ex.Message}");
-        }
+    "AtlasApi": {
+        "BaseUrl": "https://api.atlas.exemplo.com/"
     }
 }
