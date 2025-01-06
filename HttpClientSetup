@@ -1,0 +1,133 @@
+// Infrastructure/Http/HttpClientSetup.cs
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Configuration;
+using System;
+using System.Net.Http;
+using System.Threading;
+using System.Threading.Tasks;
+
+namespace YourProject.Infrastructure.Http;
+
+public static class HttpClientSetup
+{
+    public static IServiceCollection AddHttpClients(
+        this IServiceCollection services, 
+        IConfiguration configuration)
+    {
+        // Registra o interceptador
+        services.AddTransient<TokenInterceptor>();
+        services.AddTransient<RetryHandler>();
+
+        // Configuração do HttpClient para o AtlasApi
+        services.AddHttpClient("AtlasApi", client =>
+        {
+            // Configuração base do cliente HTTP
+            client.BaseAddress = new Uri(configuration["AtlasApi:BaseUrl"]);
+            client.Timeout = TimeSpan.FromSeconds(30);
+            
+            // Headers padrão
+            client.DefaultRequestHeaders.Add("Accept", "application/json");
+            client.DefaultRequestHeaders.Add("User-Agent", "AtlasApiClient");
+        })
+        .AddHttpMessageHandler<TokenInterceptor>()
+        .AddHttpMessageHandler<RetryHandler>();
+
+        return services;
+    }
+}
+
+// Infrastructure/Http/RetryHandler.cs
+public class RetryHandler : DelegatingHandler
+{
+    private const int MaxRetries = 3;
+
+    protected override async Task<HttpResponseMessage> SendAsync(
+        HttpRequestMessage request,
+        CancellationToken cancellationToken)
+    {
+        for (int i = 0; i < MaxRetries; i++)
+        {
+            try
+            {
+                var response = await base.SendAsync(request, cancellationToken);
+
+                if (ShouldRetry(response.StatusCode))
+                {
+                    if (i == MaxRetries - 1) return response;
+                    await Task.Delay(GetDelay(i), cancellationToken);
+                    continue;
+                }
+
+                return response;
+            }
+            catch (HttpRequestException) when (i < MaxRetries - 1)
+            {
+                await Task.Delay(GetDelay(i), cancellationToken);
+            }
+        }
+
+        // Última tentativa
+        return await base.SendAsync(request, cancellationToken);
+    }
+
+    private static bool ShouldRetry(System.Net.HttpStatusCode statusCode)
+    {
+        return statusCode switch
+        {
+            // Retry on these status codes
+            System.Net.HttpStatusCode.RequestTimeout or        // 408
+            System.Net.HttpStatusCode.BadGateway or           // 502
+            System.Net.HttpStatusCode.ServiceUnavailable or   // 503
+            System.Net.HttpStatusCode.GatewayTimeout         // 504
+                => true,
+            _ => false
+        };
+    }
+
+    private static TimeSpan GetDelay(int attempt)
+    {
+        // Exponential backoff: 1s, 2s, 4s
+        return TimeSpan.FromSeconds(Math.Pow(2, attempt));
+    }
+}
+
+// Opcional: CircuitBreaker simples se necessário
+public class CircuitBreakerHandler : DelegatingHandler
+{
+    private readonly SemaphoreSlim _semaphore = new(1, 1);
+    private int _failureCount;
+    private DateTime _lastFailure;
+    private const int FailureThreshold = 5;
+    private static readonly TimeSpan BreakDuration = TimeSpan.FromSeconds(30);
+
+    protected override async Task<HttpResponseMessage> SendAsync(
+        HttpRequestMessage request,
+        CancellationToken cancellationToken)
+    {
+        await _semaphore.WaitAsync(cancellationToken);
+        try
+        {
+            if (_failureCount >= FailureThreshold && 
+                DateTime.UtcNow - _lastFailure < BreakDuration)
+            {
+                throw new HttpRequestException("Circuit breaker is open");
+            }
+
+            var response = await base.SendAsync(request, cancellationToken);
+
+            if (response.IsSuccessStatusCode)
+            {
+                _failureCount = 0;
+                return response;
+            }
+
+            _lastFailure = DateTime.UtcNow;
+            _failureCount++;
+            return response;
+        }
+        finally
+        {
+            _semaphore.Release();
+        }
+    }
+}
