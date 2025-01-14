@@ -1,0 +1,75 @@
+// LoggingContextEnricher.cs
+public class LoggingContextEnricher : ILoggerProvider
+{
+    private readonly string _context;
+    private readonly ILoggerProvider _innerProvider;
+
+    public LoggingContextEnricher(string context, ILoggerProvider innerProvider)
+    {
+        _context = context;
+        _innerProvider = innerProvider;
+    }
+
+    public ILogger CreateLogger(string categoryName)
+    {
+        var logger = _innerProvider.CreateLogger(categoryName);
+        return new ContextLogger(logger, _context);
+    }
+
+    public void Dispose()
+    {
+        _innerProvider.Dispose();
+    }
+
+    private class ContextLogger : ILogger
+    {
+        private readonly ILogger _inner;
+        private readonly string _context;
+
+        public ContextLogger(ILogger inner, string context)
+        {
+            _inner = inner;
+            _context = context;
+        }
+
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull
+            => _inner.BeginScope(state);
+
+        public bool IsEnabled(LogLevel logLevel)
+            => _inner.IsEnabled(logLevel);
+
+        public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception, Func<TState, Exception?, string> formatter)
+        {
+            using var scope = _inner.BeginScope(new Dictionary<string, object>
+            {
+                ["Context"] = _context
+            });
+
+            _inner.Log(logLevel, eventId, state, exception, formatter);
+        }
+    }
+}
+
+// Program.cs
+public static class LoggingExtensions
+{
+    public static ILoggingBuilder AddContextProvider(this ILoggingBuilder builder, string context)
+    {
+        builder.Services.TryAddEnumerable(
+            ServiceDescriptor.Singleton<ILoggerProvider>(sp =>
+            {
+                var providers = sp.GetServices<ILoggerProvider>()
+                    .Where(p => p is not LoggingContextEnricher)
+                    .ToList();
+
+                foreach (var provider in providers)
+                {
+                    return new LoggingContextEnricher(context, provider);
+                }
+
+                throw new InvalidOperationException("No logger providers found");
+            }));
+
+        return builder;
+    }
+}
