@@ -1,0 +1,175 @@
+// CustomLogger.cs
+public class CustomLogger : ILogger
+{
+    private readonly string _name;
+    private readonly CustomLoggerConfiguration _config;
+
+    public CustomLogger(string name, CustomLoggerConfiguration config)
+    {
+        _name = name;
+        _config = config;
+    }
+
+    public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+
+    public bool IsEnabled(LogLevel logLevel)
+    {
+        return logLevel >= _config.MinimumLogLevel;
+    }
+
+    public void Log<TState>(
+        LogLevel logLevel,
+        EventId eventId,
+        TState state,
+        Exception? exception,
+        Func<TState, Exception?, string> formatter)
+    {
+        if (!IsEnabled(logLevel))
+            return;
+
+        var logEntry = new LogEntry
+        {
+            Timestamp = DateTime.UtcNow,
+            LogLevel = logLevel,
+            Category = _name,
+            Message = formatter(state, exception),
+            Exception = exception?.ToString(),
+            Context = _config.CurrentContext
+        };
+
+        foreach (var writer in _config.LogWriters)
+        {
+            writer.WriteLog(logEntry);
+        }
+    }
+}
+
+// CustomLoggerConfiguration.cs
+public class CustomLoggerConfiguration
+{
+    public LogLevel MinimumLogLevel { get; set; } = LogLevel.Information;
+    public string CurrentContext { get; set; } = "Default";
+    public List<ILogWriter> LogWriters { get; set; } = new();
+}
+
+// LogEntry.cs
+public class LogEntry
+{
+    public DateTime Timestamp { get; set; }
+    public LogLevel LogLevel { get; set; }
+    public string Category { get; set; } = string.Empty;
+    public string Message { get; set; } = string.Empty;
+    public string? Exception { get; set; }
+    public string Context { get; set; } = string.Empty;
+}
+
+// ILogWriter.cs
+public interface ILogWriter
+{
+    void WriteLog(LogEntry entry);
+}
+
+// FileLogWriter.cs
+public class FileLogWriter : ILogWriter
+{
+    private readonly string _filePath;
+    private readonly object _lock = new();
+
+    public FileLogWriter(string filePath)
+    {
+        _filePath = filePath;
+        var directory = Path.GetDirectoryName(filePath);
+        if (!string.IsNullOrEmpty(directory))
+            Directory.CreateDirectory(directory);
+    }
+
+    public void WriteLog(LogEntry entry)
+    {
+        var logLine = $"{entry.Timestamp:yyyy-MM-dd HH:mm:ss.fff} [{entry.LogLevel}] {entry.Category} - {entry.Message}";
+        if (!string.IsNullOrEmpty(entry.Exception))
+            logLine += $"\nException: {entry.Exception}";
+
+        lock (_lock)
+        {
+            File.AppendAllLines(_filePath, new[] { logLine });
+        }
+    }
+}
+
+// ConsoleLogWriter.cs
+public class ConsoleLogWriter : ILogWriter
+{
+    public void WriteLog(LogEntry entry)
+    {
+        var originalColor = Console.ForegroundColor;
+        Console.ForegroundColor = GetColorForLogLevel(entry.LogLevel);
+
+        Console.WriteLine($"{entry.Timestamp:yyyy-MM-dd HH:mm:ss.fff} [{entry.LogLevel}] {entry.Category} - {entry.Message}");
+        if (!string.IsNullOrEmpty(entry.Exception))
+            Console.WriteLine($"Exception: {entry.Exception}");
+
+        Console.ForegroundColor = originalColor;
+    }
+
+    private static ConsoleColor GetColorForLogLevel(LogLevel logLevel) => logLevel switch
+    {
+        LogLevel.Trace => ConsoleColor.Gray,
+        LogLevel.Debug => ConsoleColor.Gray,
+        LogLevel.Information => ConsoleColor.White,
+        LogLevel.Warning => ConsoleColor.Yellow,
+        LogLevel.Error => ConsoleColor.Red,
+        LogLevel.Critical => ConsoleColor.DarkRed,
+        _ => ConsoleColor.White
+    };
+}
+
+// CustomLoggerProvider.cs
+public class CustomLoggerProvider : ILoggerProvider
+{
+    private readonly CustomLoggerConfiguration _config;
+    private readonly ConcurrentDictionary<string, CustomLogger> _loggers = new();
+
+    public CustomLoggerProvider(CustomLoggerConfiguration config)
+    {
+        _config = config;
+    }
+
+    public ILogger CreateLogger(string categoryName)
+    {
+        return _loggers.GetOrAdd(categoryName, name => new CustomLogger(name, _config));
+    }
+
+    public void Dispose()
+    {
+        _loggers.Clear();
+    }
+}
+
+// Program.cs - Configuração
+public static class LoggingConfiguration
+{
+    public static void AddCustomLogging(this IServiceCollection services, IConfiguration configuration)
+    {
+        var loggingConfig = new CustomLoggerConfiguration();
+        configuration.GetSection("Logging").Bind(loggingConfig);
+
+        // Configurar writers baseado no contexto
+        var context = configuration["AppContext"] ?? "Default";
+        loggingConfig.CurrentContext = context;
+
+        // Adicionar writers baseado na configuração
+        if (configuration.GetValue<bool>("Logging:WriteToConsole"))
+            loggingConfig.LogWriters.Add(new ConsoleLogWriter());
+
+        var fileLogPath = configuration["Logging:FilePath"];
+        if (!string.IsNullOrEmpty(fileLogPath))
+            loggingConfig.LogWriters.Add(new FileLogWriter(fileLogPath));
+
+        services.AddSingleton(loggingConfig);
+        services.AddLogging(builder =>
+        {
+            builder.ClearProviders();
+            builder.AddProvider(new CustomLoggerProvider(loggingConfig));
+        });
+    }
+}
