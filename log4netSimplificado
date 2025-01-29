@@ -1,0 +1,71 @@
+// === Logging/Log4NetLogger.cs ===
+using Microsoft.Extensions.Logging;
+using log4net;
+
+internal sealed class Log4NetLogger(string categoryName) : ILogger
+{
+    private readonly ILog _log4Net = LogManager.GetLogger(categoryName);
+
+    public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+
+    public bool IsEnabled(LogLevel logLevel) => true;
+
+    public void Log<TState>(
+        LogLevel logLevel,
+        EventId eventId,
+        TState state,
+        Exception? exception,
+        Func<TState, Exception?, string> formatter)
+    {
+        var message = formatter(state, exception);
+
+        switch (logLevel)
+        {
+            case LogLevel.Critical:
+                _log4Net.Fatal(message, exception);
+                break;
+            case LogLevel.Error:
+                _log4Net.Error(message, exception);
+                break;
+            case LogLevel.Warning:
+                _log4Net.Warn(message, exception);
+                break;
+            case LogLevel.Information:
+                _log4Net.Info(message, exception);
+                break;
+            case LogLevel.Debug:
+                _log4Net.Debug(message, exception);
+                break;
+            case LogLevel.Trace:
+                _log4Net.Debug(message, exception);
+                break;
+        }
+    }
+}
+
+// === Logging/Log4NetProvider.cs ===
+using Microsoft.Extensions.Logging;
+
+public sealed class Log4NetProvider : ILoggerProvider
+{
+    private readonly ConcurrentDictionary<string, ILogger> _loggers = new();
+
+    public ILogger CreateLogger(string categoryName) =>
+        _loggers.GetOrAdd(categoryName, name => new Log4NetLogger(name));
+
+    public void Dispose() => _loggers.Clear();
+}
+
+// === Logging/Log4NetExtensions.cs ===
+public static class Log4NetExtensions
+{
+    public static ILoggingBuilder AddLog4Net(this ILoggingBuilder builder)
+    {
+        // Configura o log4net usando o arquivo de configuração padrão
+        log4net.Config.XmlConfigurator.Configure();
+        
+        builder.Services.AddSingleton<ILoggerProvider, Log4NetProvider>();
+        
+        return builder;
+    }
+}
