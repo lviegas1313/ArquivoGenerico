@@ -1,0 +1,104 @@
+// Middleware/CorrelationIdMiddleware.cs
+public class CorrelationIdMiddleware(RequestDelegate next)
+{
+    public async Task Invoke(HttpContext context)
+    {
+        var correlationId = context.Request.Headers["X-Correlation-ID"].FirstOrDefault() 
+                          ?? Guid.NewGuid().ToString();
+        
+        context.Response.Headers["X-Correlation-ID"] = correlationId;
+        
+        using (LogicalThreadContext.Stacks["NDC"].Push(correlationId))
+        {
+            await next(context);
+        }
+    }
+}
+
+// HealthChecks/LoggingHealthCheck.cs
+public class LoggingHealthCheck(ILogger<LoggingHealthCheck> logger) : IHealthCheck
+{
+    public async Task<HealthCheckResult> CheckHealthAsync(
+        HealthCheckContext context, 
+        CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var testMessage = "Test health check log message";
+            logger.LogInformation(testMessage);
+            
+            // Verificar se o log foi escrito (implementação simplificada)
+            return HealthCheckResult.Healthy("Logging operational");
+        }
+        catch (Exception ex)
+        {
+            return HealthCheckResult.Unhealthy("Logging system failure", ex);
+        }
+    }
+}
+
+
+// Services/ProductService.cs (atualizado)
+public class ProductService(
+    ILogger<ProductService> logger,
+    IDatabaseRepository repository,
+    IAsyncPolicy retryPolicy) : IProductService
+{
+    public async Task<Product?> GetProductByIdAsync(int id)
+    {
+        return await retryPolicy.ExecuteAsync(async () =>
+        {
+            logger.LogInformation("Tentativa de obtenção do produto {ProductId}", id);
+            return await repository.GetAsync(id);
+        });
+    }
+}
+
+// Extensão para configuração
+public static class ResiliencePolicies
+{
+    public static IAsyncPolicy GetRetryPolicy(ILogger logger, int retryCount = 3)
+    {
+        return Policy
+            .Handle<DatabaseException>()
+            .WaitAndRetryAsync(
+                retryCount,
+                retryAttempt => TimeSpan.FromSeconds(Math.Pow(2, retryAttempt)),
+                (exception, timeSpan, retryCount, context) =>
+                {
+                    logger.LogWarning(
+                        "Tentativa {RetryAttempt} falhou. Nova tentativa em {Delay}ms. Erro: {ErrorMessage}",
+                        retryCount,
+                        timeSpan.TotalMilliseconds,
+                        exception.Message);
+                });
+    }
+}
+
+
+var builder = WebApplication.CreateBuilder(args);
+
+// Correlation ID Middleware
+builder.Services.AddTransient<CorrelationIdMiddleware>();
+
+// Health Checks
+builder.Services.AddHealthChecks()
+    .AddCheck<LoggingHealthCheck>("logging_check");
+
+// Resilience Policies
+builder.Services.AddSingleton<IAsyncPolicy>(
+    ResiliencePolicies.GetRetryPolicy(
+        logger: builder.Services.BuildServiceProvider().GetRequiredService<ILogger<ProductService>>(),
+        retryCount: builder.Configuration.GetValue<int>("RetryPolicy:MaxRetries")));
+
+// Configuração do Logging
+builder.Logging.AddLog4NetWithValidation(builder.Configuration);
+
+var app = builder.Build();
+
+// Middleware Pipeline
+app.UseMiddleware<CorrelationIdMiddleware>();
+app.UseHealthChecks("/health");
+app.MapControllers();
+
+app.Run();
