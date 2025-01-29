@@ -1,0 +1,192 @@
+// === Arquivo: Log4NetSettings.cs ===
+public class Log4NetSettings
+{
+    public required string ConfigFilePath { get; set; }
+    public required string LogLevel { get; set; }
+    public required FileAppenderSettings FileAppender { get; set; }
+    public required string ApplicationName { get; set; }
+}
+
+public class FileAppenderSettings
+{
+    public required string LogFilePath { get; set; }
+    public required string MaxFileSize { get; set; }
+    public required int MaxBackups { get; set; }
+    public required string RollingStyle { get; set; }
+}
+// === Fim: Log4NetSettings.cs ===
+
+// === Arquivo: Middleware/CorrelationIdMiddleware.cs ===
+public class CorrelationIdMiddleware(RequestDelegate next)
+{
+    public async Task Invoke(HttpContext context)
+    {
+        var correlationId = context.Request.Headers["X-Correlation-ID"].FirstOrDefault() 
+                          ?? Guid.NewGuid().ToString();
+        
+        context.Response.Headers["X-Correlation-ID"] = correlationId;
+        
+        using (LogicalThreadContext.Stacks["NDC"].Push(correlationId))
+        {
+            await next(context);
+        }
+    }
+}
+// === Fim: Middleware/CorrelationIdMiddleware.cs ===
+
+// === Arquivo: HealthChecks/LoggingHealthCheck.cs ===
+public class LoggingHealthCheck(ILogger<LoggingHealthCheck> logger) : IHealthCheck
+{
+    public async Task<HealthCheckResult> CheckHealthAsync(
+        HealthCheckContext context, 
+        CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            logger.LogInformation("Health check test message");
+            return HealthCheckResult.Healthy("Logging operational");
+        }
+        catch (Exception ex)
+        {
+            return HealthCheckResult.Unhealthy("Logging system failure", ex);
+        }
+    }
+}
+// === Fim: HealthChecks/LoggingHealthCheck.cs ===
+
+// === Arquivo: Services/ProductService.cs ===
+public interface IProductService
+{
+    Task<Product?> GetProductByIdAsync(int id);
+}
+
+public class ProductService(
+    ILogger<ProductService> logger,
+    IDatabaseRepository repository,
+    IAsyncPolicy retryPolicy) : IProductService
+{
+    public async Task<Product?> GetProductByIdAsync(int id)
+    {
+        return await retryPolicy.ExecuteAsync(async () =>
+        {
+            logger.LogInformation("Tentativa de obtenção do produto {ProductId}", id);
+            return await repository.GetAsync(id);
+        });
+    }
+}
+// === Fim: Services/ProductService.cs ===
+
+// === Arquivo: Controllers/ProductsController.cs ===
+[ApiController]
+[Route("api/[controller]")]
+public class ProductsController(
+    ILogger<ProductsController> logger,
+    IProductService productService) : ControllerBase
+{
+    [HttpGet("{id}")]
+    public async Task<IActionResult> GetProduct(int id)
+    {
+        logger.LogInformation("Iniciando busca do produto {ProductId}", id);
+        // ... implementação anterior
+    }
+}
+// === Fim: Controllers/ProductsController.cs ===
+
+// === Arquivo: Repositories/DatabaseRepository.cs ===
+public class DatabaseRepository : IDatabaseRepository
+{
+    private readonly ILogger<DatabaseRepository> _logger;
+
+    public DatabaseRepository(ILogger<DatabaseRepository> logger)
+    {
+        _logger = logger;
+    }
+
+    public async Task<Product?> GetAsync(int id)
+    {
+        _logger.LogTrace("Executando query para produto {ProductId}", id);
+        // ... implementação anterior
+    }
+}
+// === Fim: Repositories/DatabaseRepository.cs ===
+
+// === Arquivo: Program.cs ===
+var builder = WebApplication.CreateBuilder(args);
+
+// Configurações
+builder.Services.Configure<Log4NetSettings>(builder.Configuration.GetSection("Log4NetSettings"));
+
+// Health Checks
+builder.Services.AddHealthChecks()
+    .AddCheck<LoggingHealthCheck>("logging_check");
+
+// Polly Policies
+builder.Services.AddSingleton<IAsyncPolicy>(ResiliencePolicies.GetRetryPolicy(
+    builder.Services.BuildServiceProvider().GetRequiredService<ILogger<ProductService>>(),
+    builder.Configuration.GetValue<int>("RetryPolicy:MaxRetries")));
+
+// Logging
+builder.Logging.AddLog4NetWithValidation(builder.Configuration);
+
+var app = builder.Build();
+app.UseMiddleware<CorrelationIdMiddleware>();
+app.UseHealthChecks("/health");
+app.MapControllers();
+app.Run();
+// === Fim: Program.cs ===
+
+// === Arquivo: appsettings.json ===
+{
+  "Log4NetSettings": {
+    "ConfigFilePath": "log4net.config",
+    "LogLevel": "DEBUG",
+    "ApplicationName": "ProductService",
+    "FileAppender": {
+      "LogFilePath": "logs/app.log",
+      "MaxFileSize": "10MB",
+      "MaxBackups": 10,
+      "RollingStyle": "Composite"
+    }
+  },
+  "RetryPolicy": {
+    "MaxRetries": 3,
+    "BaseDelay": 2
+  }
+}
+// === Fim: appsettings.json ===
+
+// === Arquivo: log4net.config ===
+<?xml version="1.0" encoding="utf-8"?>
+<log4net>
+  <appender name="RollingFile" type="log4net.Appender.RollingFileAppender">
+    <file type="log4net.Util.PatternString" value="%property{LogFilePath}" />
+    <!-- ... demais configurações -->
+  </appender>
+  <root>
+    <level value="%property{LogLevel}" />
+    <appender-ref ref="RollingFile" />
+  </root>
+</log4net>
+// === Fim: log4net.config ===
+
+// === Arquivo: ResiliencePolicies.cs ===
+public static class ResiliencePolicies
+{
+    public static IAsyncPolicy GetRetryPolicy(ILogger logger, int retryCount = 3)
+    {
+        return Policy
+            .Handle<DatabaseException>()
+            .WaitAndRetryAsync(
+                retryCount,
+                retryAttempt => TimeSpan.FromSeconds(Math.Pow(2, retryAttempt)),
+                (exception, timeSpan, retryCount, context) =>
+                {
+                    logger.LogWarning(
+                        "Tentativa {RetryAttempt} falhou. Nova tentativa em {Delay}ms. Erro: {ErrorMessage}",
+                        retryCount,
+                        timeSpan.TotalMilliseconds,
+                        exception.Message);
+                });
+    }
+}
+// === Fim: ResiliencePolicies.cs ===
