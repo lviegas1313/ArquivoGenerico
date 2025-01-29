@@ -1,15 +1,4 @@
-// === Arquivo Único: Log4NetLogger.cs ===
-using log4net;
-using log4net.Config;
-using log4net.Core;
-using log4net.Util;
-using Microsoft.Extensions.Configuration;
-using Microsoft.Extensions.Logging;
-using Microsoft.Extensions.Options;
-using System.Collections.Concurrent;
-using System.IO;
-using System.Reflection;
-
+// === Log4NetSettings.cs ===
 public sealed class Log4NetSettings
 {
     public required string ConfigFilePath { get; set; }
@@ -19,148 +8,105 @@ public sealed class Log4NetSettings
     public required int MaxBackupFiles { get; set; }
 }
 
-public static class Log4NetExtensions
+// === Logging/Log4NetLogger.cs ===
+internal sealed class Log4NetLogger(
+    string categoryName,
+    IOptionsMonitor<Log4NetSettings> settings) : ILogger
 {
-    public static ILoggingBuilder AddCustomLog4Net(
-        this ILoggingBuilder builder,
-        IConfiguration configuration)
+    private readonly ILog _log = LogManager.GetLogger(Assembly.GetEntryAssembly(), categoryName);
+
+    public IDisposable BeginScope<TState>(TState state) where TState : notnull => 
+        NullScope.Instance;
+
+    public bool IsEnabled(LogLevel logLevel) => 
+        logLevel >= LogLevelConverter.ToMicrosoftLogLevel(settings.CurrentValue.LogLevel);
+
+    public void Log<TState>(
+        LogLevel logLevel,
+        EventId eventId,
+        TState state,
+        Exception? exception,
+        Func<TState, Exception?, string> formatter)
     {
-        // Registrar configurações
-        builder.Services.Configure<Log4NetSettings>(configuration.GetSection("Log4NetSettings"));
+        if (!IsEnabled(logLevel)) return;
+
+        var message = formatter(state, exception);
+        var log4NetLevel = LogLevelConverter.ToLog4NetLevel(logLevel);
         
-        // Registrar provedor
-        builder.Services.AddSingleton<ILoggerProvider, Log4NetLoggerProvider>();
-        
-        return builder;
-    }
-
-    private sealed class Log4NetLoggerProvider(
-        IOptionsMonitor<Log4NetSettings> settings) : ILoggerProvider
-    {
-        private readonly ConcurrentDictionary<string, Log4NetLogger> _loggers = new();
-        private bool _isConfigured;
-
-        public ILogger CreateLogger(string categoryName)
-        {
-            return _loggers.GetOrAdd(categoryName, name =>
+        _log.Logger.Log(new LoggingEvent(
+            new LoggingEventData
             {
-                EnsureInitialized(settings.CurrentValue);
-                return new Log4NetLogger(name, settings);
-            });
-        }
-
-        private void EnsureInitialized(Log4NetSettings config)
-        {
-            if (_isConfigured) return;
-            
-            lock (typeof(Log4NetLoggerProvider))
-            {
-                if (_isConfigured) return;
-
-                GlobalContext.Properties["LogFilePath"] = config.LogFilePath;
-                GlobalContext.Properties["MaxFileSize"] = $"{config.MaxFileSizeMB}MB";
-                GlobalContext.Properties["MaxBackupFiles"] = config.MaxBackupFiles;
-
-                var logRepository = LogManager.GetRepository(Assembly.GetEntryAssembly());
-                XmlConfigurator.Configure(logRepository, new FileInfo(config.ConfigFilePath));
-                
-                logRepository.Threshold = ConvertLogLevel(config.LogLevel);
-                EnsureLogDirectory(config.LogFilePath);
-                
-                _isConfigured = true;
-            }
-        }
-
-        private static void EnsureLogDirectory(string logFilePath)
-        {
-            var logDirectory = Path.GetDirectoryName(logFilePath);
-            if (!Directory.Exists(logDirectory))
-                Directory.CreateDirectory(logDirectory!);
-        }
-
-        private static Level ConvertLogLevel(string logLevel) => logLevel.ToUpper() switch
-        {
-            "TRACE" => Level.Trace,
-            "DEBUG" => Level.Debug,
-            "INFORMATION" => Level.Info,
-            "WARNING" => Level.Warn,
-            "ERROR" => Level.Error,
-            "CRITICAL" => Level.Fatal,
-            _ => Level.Info
-        };
-
-        public void Dispose() => _loggers.Clear();
-    }
-
-    private sealed class Log4NetLogger(
-        string categoryName,
-        IOptionsMonitor<Log4NetSettings> settings) : ILogger
-    {
-        private readonly ILog _log = LogManager.GetLogger(Assembly.GetEntryAssembly(), categoryName);
-
-        public IDisposable BeginScope<TState>(TState state) where TState : notnull => NullScope.Instance;
-
-        public bool IsEnabled(LogLevel logLevel) => logLevel >= ConvertLogLevel(settings.CurrentValue.LogLevel);
-
-        public void Log<TState>(
-            LogLevel logLevel,
-            EventId eventId,
-            TState state,
-            Exception? exception,
-            Func<TState, Exception?, string> formatter)
-        {
-            if (!IsEnabled(logLevel)) return;
-
-            var message = formatter(state, exception);
-            var log4NetLevel = ConvertLevel(logLevel);
-            
-            _log.Logger.Log(new LoggingEvent(
-                new LoggingEventData
-                {
-                    Level = log4NetLevel,
-                    Message = message,
-                    ExceptionString = exception?.ToString(),
-                    LoggerName = _log.Logger.Name,
-                    TimeStamp = DateTime.Now,
-                    Properties = new PropertiesDictionary()
-                }));
-        }
-
-        private static Level ConvertLevel(LogLevel logLevel) => logLevel switch
-        {
-            LogLevel.Trace => Level.Trace,
-            LogLevel.Debug => Level.Debug,
-            LogLevel.Information => Level.Info,
-            LogLevel.Warning => Level.Warn,
-            LogLevel.Error => Level.Error,
-            LogLevel.Critical => Level.Fatal,
-            _ => Level.Info
-        };
-
-        private static LogLevel ConvertLogLevel(string logLevel) => logLevel.ToUpper() switch
-        {
-            "TRACE" => LogLevel.Trace,
-            "DEBUG" => LogLevel.Debug,
-            "INFORMATION" => LogLevel.Information,
-            "WARNING" => LogLevel.Warning,
-            "ERROR" => LogLevel.Error,
-            "CRITICAL" => LogLevel.Critical,
-            _ => LogLevel.Information
-        };
+                Level = log4NetLevel,
+                Message = message,
+                ExceptionString = exception?.ToString(),
+                LoggerName = _log.Logger.Name,
+                TimeStamp = DateTime.Now,
+                Properties = new PropertiesDictionary()
+            }));
     }
 }
-// === Fim do Arquivo ===
 
-// === Uso no Program.cs ===
-var builder = WebApplication.CreateBuilder(args);
+// === Logging/Log4NetLoggerProvider.cs ===
+public sealed class Log4NetLoggerProvider(
+    IOptionsMonitor<Log4NetSettings> settings,
+    ILog4NetInitializer initializer) : ILoggerProvider
+{
+    private readonly ConcurrentDictionary<string, ILogger> _loggers = new();
 
-// Configuração essencial
-builder.Configuration.AddJsonFile("log4net.config.json");
-builder.Logging.AddCustomLog4Net(builder.Configuration); // Chamada correta
+    public Log4NetLoggerProvider(IOptionsMonitor<Log4NetSettings> settings) 
+        : this(settings, new Log4NetInitializer())
+    {
+        initializer.Initialize(settings.CurrentValue);
+    }
 
-var app = builder.Build();
-app.Run();
+    public ILogger CreateLogger(string categoryName) =>
+        _loggers.GetOrAdd(categoryName, name => new Log4NetLogger(name, settings));
 
-builder.Services.AddSingleton<ILoggerProvider, Log4NetLoggerProvider>();
+    public void Dispose()
+    {
+        _loggers.Clear();
+        GC.SuppressFinalize(this);
+    }
+}
 
-public static ILoggingBuilder AddCustomLog4Net(this ILoggingBuilder builder, IConfiguration configuration)
+// === Logging/Log4NetInitializer.cs ===
+internal sealed class Log4NetInitializer : ILog4NetInitializer
+{
+    private static readonly object InitLock = new();
+    private static bool _isInitialized;
+
+    public void Initialize(Log4NetSettings settings)
+    {
+        if (_isInitialized) return;
+        
+        lock (InitLock)
+        {
+            if (_isInitialized) return;
+
+            ConfigureLog4Net(settings);
+            _isInitialized = true;
+        }
+    }
+
+    private static void ConfigureLog4Net(Log4NetSettings settings)
+    {
+        GlobalContext.Properties["LogFilePath"] = settings.LogFilePath;
+        GlobalContext.Properties["MaxFileSize"] = $"{settings.MaxFileSizeMB}MB";
+        GlobalContext.Properties["MaxBackupFiles"] = settings.MaxBackupFiles;
+
+        var logRepository = LogManager.GetRepository(Assembly.GetEntryAssembly());
+        XmlConfigurator.Configure(logRepository, new FileInfo(settings.ConfigFilePath));
+        
+        logRepository.Threshold = LogLevelConverter.ToLog4NetLevel(settings.LogLevel);
+        EnsureLogDirectory(settings.LogFilePath);
+    }
+
+    private static void EnsureLogDirectory(string logFilePath)
+    {
+        var logDirectory = Path.GetDirectoryName(logFilePath);
+        if (!string.IsNullOrEmpty(logDirectory) && !Directory.Exists(logDirectory))
+        {
+            Directory.CreateDirectory(logDirectory);
+        }
+    }
+}
