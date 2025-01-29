@@ -1,0 +1,174 @@
+using log4net;
+using Microsoft.Extensions.Logging;
+using System.Diagnostics;
+using System.Reflection;
+
+// 1. Implementação do provedor de logging
+public sealed class Log4NetProvider(Log4NetSettings settings) : ILoggerProvider
+{
+    public ILogger CreateLogger(string categoryName) => new Log4NetLogger(categoryName, settings);
+
+    public void Dispose() { }
+}
+
+// 2. Implementação do ILogger que usa log4net
+internal sealed class Log4NetLogger(string categoryName, Log4NetSettings settings) : ILogger
+{
+    private readonly ILog _log = LogManager.GetLogger(Assembly.GetEntryAssembly(), categoryName);
+
+    public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+
+    public bool IsEnabled(LogLevel logLevel) => logLevel >= GetLogLevel(settings.LogLevel);
+
+    public void Log<TState>(
+        LogLevel logLevel,
+        EventId eventId,
+        TState state,
+        Exception? exception,
+        Func<TState, Exception?, string> formatter)
+    {
+        if (!IsEnabled(logLevel)) return;
+
+        var message = formatter(state, exception);
+        var logEvent = new log4net.Core.LoggingEvent(
+            new LoggingEventData
+            {
+                Level = ConvertLogLevel(logLevel),
+                Message = message,
+                ExceptionString = exception?.ToString(),
+                LoggerName = categoryName,
+                TimeStamp = DateTime.Now,
+                Properties = new log4net.Util.PropertiesDictionary()
+            });
+
+        _log.Logger.Log(logEvent);
+    }
+
+    private static log4net.Core.Level ConvertLogLevel(LogLevel logLevel) => logLevel switch
+    {
+        LogLevel.Trace => log4net.Core.Level.Trace,
+        LogLevel.Debug => log4net.Core.Level.Debug,
+        LogLevel.Information => log4net.Core.Level.Info,
+        LogLevel.Warning => log4net.Core.Level.Warn,
+        LogLevel.Error => log4net.Core.Level.Error,
+        LogLevel.Critical => log4net.Core.Level.Fatal,
+        _ => log4net.Core.Level.Off
+    };
+
+    private static LogLevel GetLogLevel(string level) => level.ToUpper() switch
+    {
+        "TRACE" => LogLevel.Trace,
+        "DEBUG" => LogLevel.Debug,
+        "INFO" => LogLevel.Information,
+        "WARN" => LogLevel.Warning,
+        "ERROR" => LogLevel.Error,
+        "FATAL" => LogLevel.Critical,
+        _ => LogLevel.Information
+    };
+}
+
+// 3. Extensão para registro
+public static class Log4NetExtensions
+{
+    public static ILoggingBuilder AddLog4Net(this ILoggingBuilder builder, IConfiguration configuration)
+    {
+        var settings = configuration.GetSection("Log4NetSettings").Get<Log4NetSettings>()!;
+        
+        // Configurar log4net
+        GlobalContext.Properties["LogFilePath"] = settings.LogFilePath;
+        XmlConfigurator.Configure(new FileInfo(settings.ConfigFilePath));
+        
+        // Definir nível global
+        LogManager.GetRepository(Assembly.GetEntryAssembly())!.Threshold = ConvertLevel(settings.LogLevel);
+        
+        return builder.ClearProviders().AddProvider(new Log4NetProvider(settings));
+    }
+
+    private static log4net.Core.Level ConvertLevel(string level) => level.ToUpper() switch
+    {
+        "TRACE" => log4net.Core.Level.Trace,
+        "DEBUG" => log4net.Core.Level.Debug,
+        "INFO" => log4net.Core.Level.Info,
+        "WARN" => log4net.Core.Level.Warn,
+        "ERROR" => log4net.Core.Level.Error,
+        "FATAL" => log4net.Core.Level.Fatal,
+        _ => log4net.Core.Level.Info
+    };
+}
+program.cs 
+var builder = WebApplication.CreateBuilder(args);
+
+// Configurar logging
+builder.Logging.AddLog4Net(builder.Configuration);
+
+// Exemplo de uso
+builder.Services.AddTransient<MyService>();
+
+var app = builder.Build();
+app.Run();
+
+// Classe de exemplo usando ILogger<T>
+public class MyService(ILogger<MyService> logger)
+{
+    public void DoWork()
+    {
+        logger.LogInformation("Iniciando processamento...");
+        try
+        {
+            // Lógica principal
+            logger.LogDebug("Etapa 1 concluída");
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(ex, "Erro durante o processamento");
+        }
+    }
+}
+
+xml 
+<?xml version="1.0" encoding="utf-8"?>
+<log4net>
+  <!-- Appender para arquivo local -->
+  <appender name="FileAppender" type="log4net.Appender.RollingFileAppender">
+    <!-- Caminho do arquivo (usa placeholder configurável via código) -->
+    <file type="log4net.Util.PatternString" value="%property{LogFilePath}" />
+    
+    <!-- Configuração de rotação -->
+    <appendToFile value="true" />
+    <rollingStyle value="Composite" />
+    <maxSizeRollBackups value="10" />
+    <maximumFileSize value="10MB" />
+    <staticLogFileName value="true" />
+    
+    <!-- Formatação do log -->
+    <layout type="log4net.Layout.PatternLayout">
+      <conversionPattern value="%date [%thread] %-5level %logger - %message%newline" />
+    </layout>
+  </appender>
+
+  <!-- Appender para rede (exemplo com UDP) -->
+  <appender name="UdpAppender" type="log4net.Appender.UdpAppender">
+    <remoteAddress value="192.168.1.100" />
+    <remotePort value="8080" />
+    <layout type="log4net.Layout.XmlLayoutSchemaLog4j" />
+  </appender>
+
+  <!-- Definir appenders ativos -->
+  <root>
+    <level value="INFO" />
+    <appender-ref ref="FileAppender" />
+    <appender-ref ref="UdpAppender" /> <!-- Opcional: envio para rede -->
+  </root>
+</log4net>
+
+program dinamica 
+var builder = WebApplication.CreateBuilder(args);
+
+// Configurar o caminho do arquivo dinamicamente
+GlobalContext.Properties["LogFilePath"] = builder.Configuration["Log4NetSettings:LogFilePath"]!;
+
+// Carregar configuração do log4net
+XmlConfigurator.Configure(new FileInfo("log4net.config"));
+
+// Registrar provedor de logging
+builder.Logging.AddLog4Net(builder.Configuration);
