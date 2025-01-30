@@ -1,4 +1,166 @@
-### Solução: Encapsular a Conversão em `CertificateSettings`
+Sem problemas! Vou refatorar mantendo a classe `CertificateSettings` como uma **classe tradicional** e ajustar apenas o `SslCertificateHandler`. Aqui está a solução:
+
+---
+
+### 1. Classe `CertificateSettings` (Original + Novas Propriedades)
+
+```csharp
+public class CertificateSettings
+{
+    public string Path { get; set; }               // Mantido para uso local
+    public string Passphrase { get; set; }         // Mantido para uso local
+    public string StoreLocation { get; set; }      // Novo: "LocalMachine" ou "CurrentUser"
+    public string StoreName { get; set; }          // Novo: Ex: "My", "Root", etc.
+    public string SubjectDistinguishedName { get; set; } // Novo: Ex: "CN=example.com, OU=TI, O=Empresa"
+}
+```
+
+---
+
+### 2. Classe `SslCertificateHandler` Refatorada
+
+```csharp
+using System.Security.Cryptography.X509Certificates;
+
+public class SslCertificateHandler : HttpClientHandler
+{
+    public SslCertificateHandler(CertificateSettings settings)
+    {
+        if (IsServerConfiguration(settings))
+        {
+            ConfigureFromStore(settings);
+        }
+        else
+        {
+            ConfigureFromFile(settings);
+        }
+    }
+
+    private bool IsServerConfiguration(CertificateSettings settings)
+    {
+        return !string.IsNullOrEmpty(settings.StoreLocation) &&
+               !string.IsNullOrEmpty(settings.StoreName) &&
+               !string.IsNullOrEmpty(settings.SubjectDistinguishedName);
+    }
+
+    private void ConfigureFromStore(CertificateSettings settings)
+    {
+        var storeLocation = Enum.Parse<StoreLocation>(settings.StoreLocation);
+        var storeName = Enum.Parse<StoreName>(settings.StoreName);
+
+        using (var store = new X509Store(storeName, storeLocation))
+        {
+            store.Open(OpenFlags.ReadOnly);
+            var certificates = store.Certificates.Find(
+                X509FindType.FindBySubjectDistinguishedName,
+                settings.SubjectDistinguishedName,
+                validOnly: true // Certificados válidos (não expirados)
+            );
+
+            ValidateCertificate(certificates, $"Subject DN: {settings.SubjectDistinguishedName}");
+            ClientCertificates.Add(certificates[0]);
+        }
+    }
+
+    private void ConfigureFromFile(CertificateSettings settings)
+    {
+        var certificate = new X509Certificate2(settings.Path, settings.Passphrase);
+        ValidateCertificate(new X509Certificate2Collection { certificate }, $"Path: {settings.Path}");
+        ClientCertificates.Add(certificate);
+    }
+
+    private void ValidateCertificate(X509Certificate2Collection certificates, string searchCriteria)
+    {
+        if (certificates.Count == 0)
+            throw new InvalidOperationException($"Certificado não encontrado. Critério: {searchCriteria}");
+
+        var cert = certificates[0];
+        if (cert.NotAfter < DateTime.Now)
+            throw new InvalidOperationException($"Certificado expirado em {cert.NotAfter:dd/MM/yyyy}");
+    }
+}
+```
+
+---
+
+### 3. Configuração no `appsettings.json`
+
+#### Ambiente Local (Configuração Original):
+```json
+"CertificateSettings": {
+    "Path": "certs/local-cert.pfx",
+    "Passphrase": "senha123"
+}
+```
+
+#### Servidor (Nova Configuração):
+```json
+"CertificateSettings": {
+    "StoreLocation": "LocalMachine",
+    "StoreName": "My",
+    "SubjectDistinguishedName": "CN=api.production.com, OU=Security, O=Company"
+}
+```
+
+---
+
+### Principais Pontos da Refatoração:
+
+1. **Respeito à Classe Original:**  
+   - A classe `CertificateSettings` permanece uma classe tradicional com propriedades públicas.
+
+2. **Lógica de Carregamento de Certificado:**  
+   - **Ambiente Local:** Usa `Path` e `Passphrase` para carregar o certificado de um arquivo.
+   - **Servidor:** Usa `StoreLocation`, `StoreName`, e `SubjectDistinguishedName` para buscar no repositório de certificados.
+
+3. **Validação de Expiração:**  
+   - Verifica se o certificado está expirado em ambos os cenários.
+
+4. **Mensagens de Erro Claras:**  
+   - Indica qual critério de busca falhou e se o certificado está expirado.
+
+---
+
+### Uso no `Program.cs` (Inalterado):
+
+```csharp
+builder.Services.AddHttpClient()
+    .ConfigurePrimaryHttpMessageHandler(sp => 
+    {
+        var settings = sp.GetRequiredService<IOptions<CertificateSettings>>().Value;
+        return new SslCertificateHandler(settings);
+    });
+```
+
+---
+
+### Testes de Validação:
+
+1. **Certificado Não Encontrado no Servidor:**
+   ```csharp
+   var settings = new CertificateSettings 
+   { 
+       StoreLocation = "LocalMachine", 
+       StoreName = "My", 
+       SubjectDistinguishedName = "CN=inexistente.com" 
+   };
+   Assert.Throws<InvalidOperationException>(() => new SslCertificateHandler(settings));
+   ```
+
+2. **Certificado Expirado:**
+   ```csharp
+   var settings = new CertificateSettings 
+   { 
+       Path = "certs/expired-cert.pfx", 
+       Passphrase = "senha123" 
+   };
+   Assert.Throws<InvalidOperationException>(() => new SslCertificateHandler(settings));
+   ```
+
+Esta solução mantém a compatibilidade com a configuração original e adiciona a funcionalidade necessária para o servidor, tudo dentro dos princípios SOLID. 😊
+
+
+## Solução: Encapsular a Conversão em `CertificateSettings`
 
 Para centralizar a validação e conversão, podemos adicionar propriedades à classe `CertificateSettings` que retornam os enums diretamente. Isso mantém a configuração limpa e evita repetição de código.
 
