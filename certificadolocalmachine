@@ -1,0 +1,107 @@
+### Solução: Encapsular a Conversão em `CertificateSettings`
+
+Para centralizar a validação e conversão, podemos adicionar propriedades à classe `CertificateSettings` que retornam os enums diretamente. Isso mantém a configuração limpa e evita repetição de código.
+
+#### 1. Classe `CertificateSettings` Atualizada:
+
+```csharp
+using System.Security.Cryptography.X509Certificates;
+
+public class CertificateSettings
+{
+    // Propriedades originais (para appsettings.json)
+    public string Path { get; set; }
+    public string Passphrase { get; set; }
+    public string StoreLocation { get; set; } // Ex: "LocalMachine"
+    public string StoreName { get; set; }     // Ex: "My"
+    public string SubjectDistinguishedName { get; set; }
+
+    // Propriedades computadas (para uso interno)
+    public StoreLocation StoreLocationEnum => 
+        Enum.Parse<StoreLocation>(StoreLocation);
+
+    public StoreName StoreNameEnum => 
+        Enum.Parse<StoreName>(StoreName);
+}
+```
+
+---
+
+#### 2. Atualização no `SslCertificateHandler`:
+
+```csharp
+private void ConfigureFromStore(CertificateSettings settings)
+{
+    using var store = new X509Store(settings.StoreNameEnum, settings.StoreLocationEnum);
+    store.Open(OpenFlags.ReadOnly);
+
+    var certificates = store.Certificates.Find(
+        X509FindType.FindBySubjectDistinguishedName,
+        settings.SubjectDistinguishedName,
+        validOnly: true
+    );
+
+    ValidateCertificate(certificates, $"Subject DN: {settings.SubjectDistinguishedName}");
+    ClientCertificates.Add(certificates[0]);
+}
+```
+
+---
+
+### Vantagens:
+
+1. **Centralização da Lógica:**  
+   A conversão de `string` para `enum` fica encapsulada na classe `CertificateSettings`.
+
+2. **Validação Implícita:**  
+   Qualquer valor inválido em `StoreLocation` ou `StoreName` lançará uma exceção durante o parsing, facilitando o debug.
+
+3. **Mantenha a Configuração como String:**  
+   O arquivo `appsettings.json` continua usando strings legíveis (ex: `"LocalMachine"`), que são convertidas para enums apenas no código.
+
+4. **Reusabilidade:**  
+   Qualquer outra classe que precise desses valores pode usar as propriedades `StoreLocationEnum` e `StoreNameEnum` diretamente.
+
+---
+
+### Configuração no `appsettings.json` (Inalterada):
+
+```json
+"CertificateSettings": {
+    "StoreLocation": "LocalMachine",
+    "StoreName": "My",
+    "SubjectDistinguishedName": "CN=api.example.com"
+}
+```
+
+---
+
+### Tratamento de Erros (Opcional):
+
+Para melhorar a experiência, você pode adicionar validação explícita:
+
+```csharp
+public class CertificateSettings
+{
+    // ... (outras propriedades)
+
+    public void Validate()
+    {
+        if (!Enum.TryParse<StoreLocation>(StoreLocation, out _))
+            throw new ArgumentException($"StoreLocation inválido: {StoreLocation}");
+
+        if (!Enum.TryParse<StoreName>(StoreName, out _))
+            throw new ArgumentException($"StoreName inválido: {StoreName}");
+    }
+}
+
+// Uso:
+var settings = new CertificateSettings();
+settings.Validate(); // Lança exceção se houver valores inválidos
+```
+
+---
+
+### Conclusão
+
+Ao encapsular a conversão dentro da própria classe `CertificateSettings`, você mantém o código limpo, adere ao **SOLID** (especialmente o **Single Responsibility Principle**) e facilita futuras modificações. 😊
