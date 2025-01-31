@@ -1,0 +1,120 @@
+using System.Collections.Generic;
+using System.IO;
+using System.Xml.Serialization;
+
+[XmlRoot(ElementName = "log4net")]
+public class Log4NetConfiguration
+{
+    [XmlElement("appender")]
+    public List<Appender> Appenders { get; set; } = new List<Appender>();
+
+    [XmlElement("root")]
+    public Root Root { get; set; } = new Root();
+
+    public string ToXml()
+    {
+        var serializer = new XmlSerializer(typeof(Log4NetConfiguration));
+        var namespaces = new XmlSerializerNamespaces();
+        namespaces.Add("", "");
+
+        using (var writer = new StringWriter())
+        {
+            serializer.Serialize(writer, this, namespaces);
+            return writer.ToString();
+        }
+    }
+
+    public static Log4NetConfiguration CreateDefault()
+    {
+        return new Log4NetConfiguration
+        {
+            Appenders = new List<Appender>
+            {
+                new Appender
+                {
+                    Name = "FileAppender",
+                    Type = "log4net.Appender.FileAppender",
+                    File = new FileSettings { Value = "logs/myapp.log" },
+                    AppendToFile = true,
+                    Layout = new Layout
+                    {
+                        Type = "log4net.Layout.PatternLayout",
+                        ConversionPattern = new ConversionPattern
+                        {
+                            Value = "%date [%thread] %-5level %logger - %message%newline"
+                        }
+                    }
+                }
+            },
+            Root = new Root
+            {
+                Level = new Level { Value = "INFO" },
+                AppenderRefs = new List<AppenderRef>
+                {
+                    new AppenderRef { Ref = "FileAppender" }
+                }
+            }
+        };
+    }
+
+    // Classes internas
+    public class Appender
+    {
+        [XmlAttribute("name")]
+        public string Name { get; set; }
+
+        [XmlAttribute("type")]
+        public string Type { get; set; }
+
+        [XmlElement("layout")]
+        public Layout Layout { get; set; }
+
+        [XmlElement("file")]
+        public FileSettings File { get; set; }
+
+        [XmlElement("appendToFile")]
+        public bool AppendToFile { get; set; }
+    }
+
+    public class Layout
+    {
+        [XmlAttribute("type")]
+        public string Type { get; set; }
+
+        [XmlElement("conversionPattern")]
+        public ConversionPattern ConversionPattern { get; set; }
+    }
+
+    public class ConversionPattern
+    {
+        [XmlAttribute("value")]
+        public string Value { get; set; }
+    }
+
+    public class FileSettings
+    {
+        [XmlAttribute("value")]
+        public string Value { get; set; }
+    }
+
+    public class Root
+    {
+        [XmlElement("level")]
+        public Level Level { get; set; } = new Level();
+
+        [XmlElement("appender-ref")]
+        public List<AppenderRef> AppenderRefs { get; set; } = new List<AppenderRef>();
+    }
+
+    public class Level
+    {
+        [XmlAttribute("value")]
+        public string Value { get; set; } = "INFO";
+    }
+
+    public class AppenderRef
+    {
+        [XmlAttribute("ref")]
+        public string Ref { get; set; }
+    }
+}
