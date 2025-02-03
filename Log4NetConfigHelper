@@ -1,0 +1,85 @@
+using log4net;
+using log4net.Appender;
+using log4net.Config;
+using log4net.Layout;
+using log4net.Repository;
+using Microsoft.Extensions.Logging;
+using System.Collections.Generic;
+using System.IO;
+
+public static class Log4NetConfigHelper
+{
+    public static Log4NetProviderOptions GetLog4NetProviderOptions()
+    {
+        return new Log4NetProviderOptions
+        {
+            // Não usa arquivo .config
+            InjectLoggerProvider = (provider, repository) => 
+            {
+                ConfigureRepository(repository);
+            }
+        };
+    }
+
+    private static void ConfigureRepository(ILoggerRepository repository)
+    {
+        // Reset na configuração anterior
+        repository.ResetConfiguration();
+
+        // 1. Appender para arquivo (rotação diária e por tamanho)
+        var fileAppender = new RollingFileAppender
+        {
+            Name = "RollingFileAppender",
+            File = Path.Combine(Directory.GetCurrentDirectory(), "Logs", "application.log"),
+            AppendToFile = true,
+            RollingStyle = RollingFileAppender.RollingMode.Composite,
+            DatePattern = "_yyyy-MM-dd'.log'",
+            MaxSizeRollBackups = 30,
+            MaximumFileSize = "50MB",
+            StaticLogFileName = false,
+            Layout = new PatternLayout("%date [%thread] %-5level %logger - %message%newline%exception")
+        };
+
+        // 2. Appender de console opcional
+        var consoleAppender = new ConsoleAppender
+        {
+            Name = "ConsoleAppender",
+            Layout = new PatternLayout("%date [%thread] %-5level %logger - %message%newline")
+        };
+
+        // Ativar os appenders
+        fileAppender.ActivateOptions();
+        consoleAppender.ActivateOptions();
+
+        // Adicionar appenders ao repositório
+        BasicConfigurator.Configure(repository, fileAppender, consoleAppender);
+
+        // Configuração do logger raíz
+        var hierarchy = (log4net.Repository.Hierarchy.Hierarchy)repository;
+        hierarchy.Root.Level = log4net.Core.Level.Debug;
+    }
+}
+
+// Para alterar o diretório dos logs:
+fileAppender.File = Path.Combine("C:", "CustomLogs", "myapp.log");
+
+// Para mudar o padrão de rotação:
+fileAppender.RollingStyle = RollingFileAppender.RollingMode.Date;
+fileAppender.DatePattern = "_yyyy-MM'.log'";
+
+// Para adicionar filtros:
+fileAppender.AddFilter(new log4net.Filter.LevelRangeFilter
+{
+    LevelMin = log4net.Core.Level.Info,
+    LevelMax = log4net.Core.Level.Fatal
+});
+
+// Para logs assíncronos:
+var asyncAppender = new log4net.Appender.AsyncAppender();
+asyncAppender.AddAppender(fileAppender);
+BasicConfigurator.Configure(repository, asyncAppender);
+
+
+//program 
+// Configuração totalmente programática
+builder.Logging.AddLog4Net(Log4NetConfigHelper.GetLog4NetProviderOptions());
