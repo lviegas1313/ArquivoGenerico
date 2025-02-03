@@ -1,0 +1,8 @@
+public sealed class Log4NetSettings
+{
+    public required string Pattern { get; init; } = "%date [%thread] %-5level %logger - %message%newline";
+    public required string FilePath { get; init; } = "logs/application.log";
+    public required string MaxFileSize { get; init; } = "10MB";
+    public required int MaxBackups { get; init; } = 10;
+    public required string LogLevel { get; init; } = "INFO";
+}
