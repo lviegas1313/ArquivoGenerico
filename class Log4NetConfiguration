@@ -1,0 +1,28 @@
+public sealed class Log4NetConfiguration
+{
+    private readonly Log4NetSettings _settings = new Log4NetSettings 
+    { 
+        Pattern = "%date [%thread] %-5level %logger - %message%newline", 
+        FilePath = "logs/app.log", 
+        MaxFileSize = "10MB", 
+        MaxBackups = 5, 
+        LogLevel = "INFO" 
+    };
+
+    public Log4NetProviderOptions GetProviderOptions() 
+    {
+        return new Log4NetProviderOptions
+        {
+            // Configurações personalizadas baseadas em _settings
+            ConfigFile = null, // Configuração programática
+            LoggerRepository = Assembly.GetEntryAssembly().FullName
+        };
+    }
+}
+
+// Program.cs
+var log4NetConfiguration = new Log4NetConfiguration();
+builder.Logging.AddLog4Net(log4NetConfiguration.GetProviderOptions());
+```
+
+Agora a classe gera as `Log4NetProviderOptions` para configuração do logging.
