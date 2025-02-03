@@ -1,0 +1,37 @@
+using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
+using log4net;
+using Microsoft.Extensions.Configuration;
+using Microsoft.AspNetCore.Hosting;
+
+public static Log4NetProviderOptions ConfigureLog4NetOptions(
+    IWebHostEnvironment environment,
+    IConfiguration configuration,
+    string appVersion = "2.0.0")
+{
+    return new Log4NetProviderOptions
+    {
+        Log4NetConfigFileName = "log4net.advanced.config",
+        Watch = true,
+        PropertyOverrides = new List<KeyValuePair<string, string>>
+        {
+            new("ApplicationName", environment.ApplicationName),
+            new("Environment", environment.EnvironmentName),
+            new("LogsDirectory", Path.Combine(environment.ContentRootPath, "Logs")),
+            new("ConnectionStrings:LogsDB", configuration.GetConnectionString("LogsDB")),
+            new("AppVersion", appVersion)
+        },
+        InjectLoggerProvider = (provider, repository) =>
+        {
+            GlobalContext.Properties["MachineName"] = Environment.MachineName;
+            GlobalContext.Properties["AppVersion"] = appVersion;
+            GlobalContext.Properties["ContentRoot"] = environment.ContentRootPath;
+            
+            // Adiciona contexto dinâmico (opcional)
+            repository.ConfigurationChanged += (sender, args) =>
+            {
+                GlobalContext.Properties["LastConfigReload"] = DateTime.UtcNow.ToString("o");
+            };
+        }
+    };
+}
