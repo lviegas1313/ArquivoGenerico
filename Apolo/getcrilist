@@ -1,0 +1,107 @@
+public class CriExtraAccounting
+{
+    private static int _counter = 0;
+
+    public int Counter { get; private set; }
+    public DateTime ReferenceDate { get; set; }
+    public string PropriedadeFixa1 { get; set; }
+    public string PropriedadeFixa2 { get; set; }
+    public string PropriedadeVariavel1 { get; set; }
+    public string PropriedadeVariavel2 { get; set; }
+    public decimal ValorCalculado { get; set; }
+
+    private CriExtraAccounting() { }
+
+    public static CriExtraAccounting Create(DateTime referenceDate)
+    {
+        return new CriExtraAccounting
+        {
+            Counter = ++_counter,
+            ReferenceDate = referenceDate
+        };
+    }
+}
+
+// Classes de Domínio
+public class RendaFixa
+{
+    public string PropriedadeVariavel1 { get; set; }
+    public string PropriedadeVariavel2 { get; set; }
+    public decimal ValorNominal { get; set; }
+    public decimal TaxaJuros { get; set; }
+
+    public CriExtraAccounting ToCriExtraAccounting(DateTime referenceDate)
+    {
+        var entry = CriExtraAccounting.Create(referenceDate);
+        entry.PropriedadeFixa1 = "ValorFixoRendaFixa";
+        entry.PropriedadeFixa2 = "CódigoRF-2025";
+        entry.PropriedadeVariavel1 = this.PropriedadeVariavel1;
+        entry.PropriedadeVariavel2 = this.PropriedadeVariavel2;
+        entry.ValorCalculado = ValorNominal * TaxaJuros;
+        return entry;
+    }
+}
+
+public class Opcoes
+{
+    public string PropriedadeVariavel1 { get; set; }
+    public string PropriedadeVariavel2 { get; set; }
+    public decimal PrecoExercicio { get; set; }
+    public int Quantidade { get; set; }
+
+    public CriExtraAccounting ToCriExtraAccounting(DateTime referenceDate)
+    {
+        var entry = CriExtraAccounting.Create(referenceDate);
+        entry.PropriedadeFixa1 = "ValorFixoOpcoes";
+        entry.PropriedadeFixa2 = "CódigoOP-2025";
+        entry.PropriedadeVariavel1 = this.PropriedadeVariavel1;
+        entry.PropriedadeVariavel2 = this.PropriedadeVariavel2;
+        entry.ValorCalculado = PrecoExercicio * Quantidade;
+        return entry;
+    }
+}
+
+// Classe Processor com métodos de processamento
+public class Processor
+{
+    private List<RendaFixa> rendaFixalist = new List<RendaFixa>();
+    private List<Opcoes> opcosList = new List<Opcoes>();
+    // Adicione outras listas conforme necessário
+
+    public List<CriExtraAccounting> GetCriECList(DateTime referenceDate)
+    {
+        var criECList = new List<CriExtraAccounting>();
+        
+        GetSnapClosedDataAndProcessIndexers(referenceDate).Wait();
+        rendaFixalist = FilterRendaFixalist(rendaFixalist);
+
+        AddEntriesFromList(criECList, rendaFixalist, referenceDate, (rf, date) => rf.ToCriExtraAccounting(date));
+        AddEntriesFromList(criECList, opcosList, referenceDate, (opc, date) => opc.ToCriExtraAccounting(date));
+        // Adicione outras listas aqui
+
+        return criECList;
+    }
+
+    private void AddEntriesFromList<T>(
+        List<CriExtraAccounting> criECList,
+        IEnumerable<T> sourceList,
+        DateTime referenceDate,
+        Func<T, DateTime, CriExtraAccounting> transformMethod)
+    {
+        foreach (var item in sourceList)
+        {
+            criECList.Add(transformMethod(item, referenceDate));
+        }
+    }
+
+    private async Task GetSnapClosedDataAndProcessIndexers(DateTime date)
+    {
+        // Implementação específica do processamento de dados
+    }
+
+    private List<RendaFixa> FilterRendaFixalist(List<RendaFixa> list)
+    {
+        // Implementação específica do filtro
+        return list.Where(item => item.ValorNominal > 0).ToList();
+    }
+}
