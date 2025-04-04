@@ -1,0 +1,46 @@
+@echo off
+SETLOCAL ENABLEDELAYEDEXPANSION
+
+REM Diretório onde os zips das versões do Node estão
+set "NODE_ZIPS=C:\NodeZips"
+set "FNM_DIR=%USERPROFILE%\.fnm"
+set "FNM_BIN=C:\Tools\fnm\fnm.exe"
+
+REM Criar pasta onde o fnm guarda os Nodes
+mkdir "%FNM_DIR%\node-versions" >nul 2>&1
+
+echo Instalando versões do Node.js com FNM offline...
+
+for %%F in (%NODE_ZIPS%\node-v*-win-x64.zip) do (
+    echo ----------------------------
+    echo Processando: %%~nxF
+
+    set "ZIPFILE=%%~F"
+    for /f "tokens=2 delims=-" %%V in ("%%~nF") do (
+        set "VERSION=%%V"
+        echo Versão: !VERSION!
+
+        set "TARGET=%FNM_DIR%\node-versions\!VERSION!\installation"
+        mkdir "!TARGET!" >nul 2>&1
+
+        echo Extraindo para !TARGET!...
+        powershell -nologo -command "Expand-Archive -Path '%%~F' -DestinationPath '!TARGET!'"
+
+        REM Se a pasta tiver subpasta tipo 'node-vXX', mover tudo pra cima
+        if exist "!TARGET!\node-!VERSION!-win-x64\" (
+            xcopy /E /Y "!TARGET!\node-!VERSION!-win-x64\*" "!TARGET!\"
+            rmdir /S /Q "!TARGET!\node-!VERSION!-win-x64"
+        )
+    )
+)
+
+echo ----------------------------
+echo Todas as versões foram instaladas.
+
+REM Mostrar as versões disponíveis
+echo Versões disponíveis:
+%FNM_BIN% list
+
+echo.
+echo Use `fnm use <versao>` para ativar uma versão.
+pause
