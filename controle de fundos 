@@ -1,0 +1,246 @@
+Com base nos requisitos apresentados, proponho uma arquitetura orientada a serviços com separação de responsabilidades, utilizando a stack sugerida (Azure AKS + Docker). A arquitetura segue um modelo híbrido entre monolítico modular e microsserviços, otimizado para baixa complexidade operacional:
+
+### Diagrama de Componentes
+```
++---------------------+       +-----------------------+
+|    Frontend Web     |       |    Sistema Externo    |
+| (Interface Admin)   |       | (Integrações Financeiras)|
++----------+----------+       +-----------+-----------+
+           |                             |
++----------v-------------------v----------+
+|          Gateway API (Ingress)          |
+|        (Azure Application Gateway)      |
++----------+-------------------+----------+
+           |                   |
++----------v-------+   +-------v----------+
+|   Cadastro API   |   |  Notificações    |
+| (ASP.NET Core)   |   | (Azure Functions)|
++------------------+   +--------+---------+
+           |                   |
++----------v-------------------v----------+
+|          Message Broker (Azure Queue)   |
+|        (Fila de Eventos para Alerta)    |
++----------+-------------------+----------+
+           |                   |
++----------v----------+  +-----v-----------------+
+|  Banco de Dados     |  | Auditoria/Logs        |
+|  Principal (SQL)    |  | (Cosmos DB NoSQL)     |
+| (Azure SQL Database)|  +-----------------------+
++---------------------+
+```
+
+### Descrição dos Componentes
+
+1. **Azure Kubernetes Service (AKS)**
+   - **Nó 1: Serviço de Cadastro**
+     - API REST em ASP.NET Core (ou Java Spring Boot)
+     - Responsável por: CRUD de operações, eventos e metadados
+     - Expõe endpoints para frontend e integrações
+   - **Nó 2: Serviço de Controle**
+     - Workers em .NET Core BackgroundService (ou Python Celery)
+     - Responsável por: Monitoramento temporal, emissão de alertas
+     - Escalonamento horizontal automático baseado em carga temporal
+
+2. **Armazenamento de Dados**
+   - **Banco de Dados Principal (Transacional)**
+     - Azure SQL Database (PaaS)
+     - Schema: Operações, Eventos, Usuários, Configurações de Alerta
+     - Modelo relacional com ACID para garantia de consistência
+   - **Banco de Auditoria e Logs**
+     - Azure Cosmos DB (NoSQL - API MongoDB)
+     - Armazena: Histórico de alterações, logs de eventos, trilha de auditoria
+     - Time-to-live (TTL) automático para logs operacionais
+
+3. **Mecanismo de Notificações**
+   - **Azure Functions** (Serverless)
+     - Disparadas por eventos na fila de mensagens
+     - Envio de alertas via: E-mail (SendGrid/SMTP), Teams Webhooks
+     - Baixo custo operacional (cobrança por execução)
+
+4. **Comunicação Assíncrona**
+   - **Azure Queue Storage**
+     - Fila "eventos-para-alerta": Recebe eventos do serviço de cadastro quando datas críticas são registradas/alteradas
+     - Desacoplamento entre cadastro e notificações
+
+5. **Gerenciamento de Logs**
+   - **Solução Centralizada**
+     - Azure Monitor + Application Insights
+     - Coleta de: Logs de aplicação, desempenho, exceções
+     - Integração com Cosmos DB para auditoria de negócio
+
+6. **Segurança**
+   - Azure Active Directory (AAD) para autenticação
+   - Managed Identities para acesso entre serviços
+   - RBAC (Role-Based Access Control) para auditoria
+
+### Fluxos Chave
+
+1. **Cadastro de Evento**
+   - Frontend → Gateway → Cadastro API → SQL DB
+   - Gera registro assíncrono na fila de alertas
+   - Log de auditoria no Cosmos DB (registro de alteração)
+
+2. **Processamento de Alerta**
+   - Worker de controle consulta eventos com vencimento próximo (cron job diário)
+   - Publica mensagens na fila quando atinge limiares
+   - Azure Functions consome fila e envia notificações
+   - Auditoria do alerta no Cosmos DB
+
+### Vantagens da Proposta
+
+1. **Separação de Responsabilidades**
+   - Domínio de Cadastro vs. Controle independentes
+   - Atualizações sem impacto cruzado
+
+2. **Resiliência**
+   - Filas asseguram entrega de alertas mesmo em falhas
+   - Workers stateless podem ser reiniciados sem perda
+
+3. **Custo Otimizado**
+   - Tamanho mínimo de AKS (2 nós B2s)
+   - Serverless para funções esporádicas (notificações)
+   - Camada básica do Azure SQL (DTU Standard S0)
+
+4. **Auditoria Robusta**
+   - Dupla camada: Application Insights (técnico) + Cosmos DB (negócio)
+   - Armazenamento imutável via Blob Storage para backups de logs
+
+### Melhorias Adicionais
+
+1. **Cache de Consultas**
+   - Azure Redis Cache para consultas frequentes (ex: tipos de debêntures)
+
+2. **Versionamento de API**
+   - Usar `/v1/` nos endpoints para evolução futura
+
+3. **Health Checks**
+   - Endpoints `/health` para monitoramento do AKS
+
+4. **Infraestrutura como Código**
+   - Terraform ou Bicep para provisionamento replicável
+
+Essa arquitetura oferece equilíbrio entre simplicidade operacional (dada a baixa escala) e componentes modernos, permitindo evolução para microsserviços se necessário no futuro. Todos os serviços estão dentro do ecossistema Azure, simplificando gestão e segurança.
+
+
+Com base nos requisitos apresentados, proponho uma arquitetura orientada a serviços com separação de responsabilidades, utilizando a stack sugerida (Azure AKS + Docker). A arquitetura segue um modelo híbrido entre monolítico modular e microsserviços, otimizado para baixa complexidade operacional:
+
+### Diagrama de Componentes
+```
++---------------------+       +-----------------------+
+|    Frontend Web     |       |    Sistema Externo    |
+| (Interface Admin)   |       | (Integrações Financeiras)|
++----------+----------+       +-----------+-----------+
+           |                             |
++----------v-------------------v----------+
+|          Gateway API (Ingress)          |
+|        (Azure Application Gateway)      |
++----------+-------------------+----------+
+           |                   |
++----------v-------+   +-------v----------+
+|   Cadastro API   |   |  Notificações    |
+| (ASP.NET Core)   |   | (Azure Functions)|
++------------------+   +--------+---------+
+           |                   |
++----------v-------------------v----------+
+|          Message Broker (Azure Queue)   |
+|        (Fila de Eventos para Alerta)    |
++----------+-------------------+----------+
+           |                   |
++----------v----------+  +-----v-----------------+
+|  Banco de Dados     |  | Auditoria/Logs        |
+|  Principal (SQL)    |  | (Cosmos DB NoSQL)     |
+| (Azure SQL Database)|  +-----------------------+
++---------------------+
+```
+
+### Descrição dos Componentes
+
+1. **Azure Kubernetes Service (AKS)**
+   - **Nó 1: Serviço de Cadastro**
+     - API REST em ASP.NET Core (ou Java Spring Boot)
+     - Responsável por: CRUD de operações, eventos e metadados
+     - Expõe endpoints para frontend e integrações
+   - **Nó 2: Serviço de Controle**
+     - Workers em .NET Core BackgroundService (ou Python Celery)
+     - Responsável por: Monitoramento temporal, emissão de alertas
+     - Escalonamento horizontal automático baseado em carga temporal
+
+2. **Armazenamento de Dados**
+   - **Banco de Dados Principal (Transacional)**
+     - Azure SQL Database (PaaS)
+     - Schema: Operações, Eventos, Usuários, Configurações de Alerta
+     - Modelo relacional com ACID para garantia de consistência
+   - **Banco de Auditoria e Logs**
+     - Azure Cosmos DB (NoSQL - API MongoDB)
+     - Armazena: Histórico de alterações, logs de eventos, trilha de auditoria
+     - Time-to-live (TTL) automático para logs operacionais
+
+3. **Mecanismo de Notificações**
+   - **Azure Functions** (Serverless)
+     - Disparadas por eventos na fila de mensagens
+     - Envio de alertas via: E-mail (SendGrid/SMTP), Teams Webhooks
+     - Baixo custo operacional (cobrança por execução)
+
+4. **Comunicação Assíncrona**
+   - **Azure Queue Storage**
+     - Fila "eventos-para-alerta": Recebe eventos do serviço de cadastro quando datas críticas são registradas/alteradas
+     - Desacoplamento entre cadastro e notificações
+
+5. **Gerenciamento de Logs**
+   - **Solução Centralizada**
+     - Azure Monitor + Application Insights
+     - Coleta de: Logs de aplicação, desempenho, exceções
+     - Integração com Cosmos DB para auditoria de negócio
+
+6. **Segurança**
+   - Azure Active Directory (AAD) para autenticação
+   - Managed Identities para acesso entre serviços
+   - RBAC (Role-Based Access Control) para auditoria
+
+### Fluxos Chave
+
+1. **Cadastro de Evento**
+   - Frontend → Gateway → Cadastro API → SQL DB
+   - Gera registro assíncrono na fila de alertas
+   - Log de auditoria no Cosmos DB (registro de alteração)
+
+2. **Processamento de Alerta**
+   - Worker de controle consulta eventos com vencimento próximo (cron job diário)
+   - Publica mensagens na fila quando atinge limiares
+   - Azure Functions consome fila e envia notificações
+   - Auditoria do alerta no Cosmos DB
+
+### Vantagens da Proposta
+
+1. **Separação de Responsabilidades**
+   - Domínio de Cadastro vs. Controle independentes
+   - Atualizações sem impacto cruzado
+
+2. **Resiliência**
+   - Filas asseguram entrega de alertas mesmo em falhas
+   - Workers stateless podem ser reiniciados sem perda
+
+3. **Custo Otimizado**
+   - Tamanho mínimo de AKS (2 nós B2s)
+   - Serverless para funções esporádicas (notificações)
+   - Camada básica do Azure SQL (DTU Standard S0)
+
+4. **Auditoria Robusta**
+   - Dupla camada: Application Insights (técnico) + Cosmos DB (negócio)
+   - Armazenamento imutável via Blob Storage para backups de logs
+
+### Melhorias Adicionais
+
+1. **Cache de Consultas**
+   - Azure Redis Cache para consultas frequentes (ex: tipos de debêntures)
+
+2. **Versionamento de API**
+   - Usar `/v1/` nos endpoints para evolução futura
+
+3. **Health Checks**
+   - Endpoints `/health` para monitoramento do AKS
+
+4. **Infraestrutura como Código**
+   - Terraform ou Bicep para provisionamento replicável
+
+Essa arquitetura oferece equilíbrio entre simplicidade operacional (dada a baixa escala) e componentes modernos, permitindo evolução para microsserviços se necessário no futuro. Todos os serviços estão dentro do ecossistema Azure, simplificando gestão e segurança.
